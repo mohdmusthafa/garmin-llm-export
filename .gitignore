@@ -1,0 +1,25 @@
+# Credentials & tokens
+.env
+*.env
+.garminconnect/
+
+# Export output
+export/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# OS / IDE
+.DS_Store
+.vscode/
+.idea/
+*.swp
+
+# Logs
+*.log

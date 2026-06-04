@@ -1,0 +1,158 @@
+# Garmin LLM Export
+
+Export your [Garmin Connect](https://connect.garmin.com) health and fitness data as plain text files with raw JSON — built for LLM tools like [NotebookLM](https://notebooklm.google.com), ChatGPT, and Claude.
+
+No Garmin developer API key required. Authenticates through Garmin SSO (same as the website) using [python-garminconnect](https://github.com/cyberjunky/python-garminconnect).
+
+## Why plain text?
+
+LLM tools index plain `.txt` files reliably. Markdown code fences and `.md` parsing quirks (especially in NotebookLM) can cause JSON blocks to be skipped. This exporter writes section headers plus raw JSON — no markdown, no code fences — so RAG systems can retrieve your actual numbers.
+
+## Features
+
+- **Complete data export** — profile, daily health, activities, body composition, training metrics, goals, trends, golf, gear, workouts, hydration, nutrition, and more
+- **LLM-ready format** — plain `.txt` with raw JSON blocks and a table of contents for AI navigation
+- **Compact mode** — strip nulls, downsample time-series, significantly smaller files
+- **Split mode** — auto-split into files under NotebookLM's 500K word limit
+- **Resumable cache** — interrupted `--all` exports pick up where they left off
+- **Incremental updates** — `--update` fetches only new data since your last export
+- **Adaptive rate limiting** — paces API calls and backs off on 429 responses
+
+## Requirements
+
+- Python 3.13+
+- [uv](https://docs.astral.sh/uv/) (recommended) or pip
+
+## Installation
+
+```bash
+git clone <your-repo-url>
+cd garmin-llm-export
+uv sync
+```
+
+Or install with pip after cloning:
+
+```bash
+pip install -e .
+```
+
+## Setup
+
+Create a `.env` file in the project root:
+
+```env
+GARMIN_EMAIL=you@example.com
+GARMIN_PASSWORD=your-password
+```
+
+Log in once — tokens are cached at `~/.garminconnect/` for about a year:
+
+```bash
+uv run garmin-export --login
+```
+
+## Usage
+
+```bash
+# Last 30 days, 100 activities (defaults)
+uv run garmin-export
+
+# Last 7 days, compact for LLM upload
+uv run garmin-export --days 7 --compact
+
+# Full history
+uv run garmin-export --all
+
+# Full history, split for NotebookLM
+uv run garmin-export --all --split
+
+# Incremental update since last export
+uv run garmin-export --update
+```
+
+| Flag | Description |
+|------|-------------|
+| `--login` | Authenticate and cache tokens, then exit |
+| `--days N` | Days of daily health data (default: 30) |
+| `--activities N` | Max activities to export (default: 100) |
+| `--all` | Export complete history (ignores `--days` / `--activities` limits) |
+| `--compact` | Smaller output: strip nulls, downsample time-series |
+| `--split` | Split into <500K word files (implies `--compact`) |
+| `--update` | Export only new data since last export (implies `--compact`) |
+| `--output DIR` | Output directory (default: `export`) |
+| `--no-cache` | Force full re-fetch, ignore cache |
+| `--delay SEC` | Base delay between API calls (default: 0.15) |
+| `-v, --verbose` | Debug logging |
+
+Also runnable as a module:
+
+```bash
+uv run python -m garmin_llm_export --days 7 --compact
+```
+
+Output files: `export/garmin_export_YYYY-MM-DD_HHMMSS.txt` (or `_compact`, `_split_partNofM`, `_update` suffixes as applicable).
+
+## What gets exported
+
+| Section | Contents |
+|---------|----------|
+| Profile | User info, devices, settings, activity types |
+| Daily Health | Steps, HR, sleep, stress, body battery, SpO₂, HRV, respiration, intensity |
+| Activities | Summaries, splits, zones, weather, time-series |
+| Body Composition | Weight, BMI, body fat, weigh-ins |
+| Training Metrics | VO₂ max, readiness, FTP, hill/endurance scores |
+| Goals & Records | Personal records, badges, goals |
+| Trends | Weekly/daily aggregates, progress |
+| Hydration / Nutrition | Per-day logs |
+| Golf, Gear, Workouts, Training Plans, Women's Health | When available on your account |
+
+Empty sections are marked `No data available.` rather than omitted.
+
+## Recommended LLM workflow
+
+1. **Base export:** `garmin-export --all --split`
+2. Upload all `*_part*.txt` files to one NotebookLM notebook
+3. **Keep fresh:** run `garmin-export --update` periodically and upload the `_update.txt` alongside your base files
+
+## Project structure
+
+```
+garmin_llm_export/
+├── auth.py        # .env credentials + OAuth token cache
+├── cache.py       # Resumable JSON cache (per-day, per-activity, per-section)
+├── cli.py         # Command-line entry point
+├── config.py      # Export runtime settings
+├── exporter.py    # Data fetching and file writing
+├── formatters.py  # JSON compaction and LLM output formatting
+└── rate_limit.py  # Thread-safe adaptive API pacing
+```
+
+## Python API
+
+```python
+from pathlib import Path
+from garmin_llm_export import ExportCache, ExportSettings, GarminExporter, load_env, login
+from garmin_llm_export.config import settings
+
+load_env()
+api = login(Path("~/.garminconnect"))
+
+settings.compact = True
+cache = ExportCache(Path("export"), enabled=True)
+GarminExporter(api, Path("export"), days=7, max_activities=50).run()
+```
+
+## Security
+
+Never commit:
+
+- `.env` (credentials)
+- `export/` (your health data)
+- `.garminconnect/` (auth tokens)
+
+All three are listed in `.gitignore`.
+
+## License
+
+Apache 2.0 — see [LICENSE](LICENSE).
