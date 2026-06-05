@@ -76,7 +76,7 @@ GLE-5  CLI help revamp     GLE-10 Python API helper
 ## 5. Task Tracker — Implementation Status
 
 **Last updated:** 2026-06-05
-**Overall progress:** 0 / 16 tasks complete (0 %)
+**Overall progress:** 1 / 16 tasks complete (6 %)
 
 This section is the single source of truth for what has been built. Update it whenever a task moves state.
 
@@ -94,16 +94,16 @@ This section is the single source of truth for what has been built. Update it wh
 
 | Phase | Tasks | ✅ Done | 🚧 In Progress | ⏸ Blocked | 📋 To Do | % Complete |
 |---|---|---|---|---|---|---|
-| Phase 1 — Foundation | 5 | 0 | 0 | 0 | 5 | 0 % |
+| Phase 1 — Foundation | 5 | 1 | 0 | 0 | 4 | 20 % |
 | Phase 2 — Sleep First-Class | 7 | 0 | 0 | 0 | 7 | 0 % |
 | Phase 3 — Polish | 4 | 0 | 0 | 0 | 4 | 0 % |
-| **Total** | **16** | **0** | **0** | **0** | **16** | **0 %** |
+| **Total** | **16** | **1** | **0** | **0** | **15** | **6 %** |
 
 ### 5.3 Progress by epic
 
 | Epic | Tasks | Done | % Complete |
 |---|---|---|---|
-| A — Foundations | 5 | 0 | 0 % |
+| A — Foundations | 5 | 1 | 20 % |
 | B — Sleep First-Class | 7 | 0 | 0 % |
 | C — Polish | 4 | 0 | 0 % |
 
@@ -111,7 +111,7 @@ This section is the single source of truth for what has been built. Update it wh
 
 | ID | Title | Phase | Epic | Priority | Effort | Status | Dependencies | Branch / Notes |
 |---|---|---|---|---|---|---|---|---|
-| GLE-1  | Test scaffolding & fixtures       | 1 | A | P0 | S  | 📋 To Do | —                          | First task; blocks all testing |
+| GLE-1  | Test scaffolding & fixtures       | 1 | A | P0 | S  | ✅ Done   | —                          | Tests, fixtures, mock API, golden snapshot. #gle-1 |
 | GLE-2  | Section selection (`--sections`)  | 1 | A | P0 | M  | 📋 To Do | GLE-1                       | |
 | GLE-3  | Reuse cached static sections      | 1 | A | P1 | S  | 📋 To Do | GLE-1                       | |
 | GLE-4  | Focus presets (`--focus`)         | 1 | A | P0 | S  | 📋 To Do | GLE-2                       | |
@@ -130,16 +130,14 @@ This section is the single source of truth for what has been built. Update it wh
 
 ### 5.5 Ready-to-pick queue
 
-Tasks whose dependencies are all satisfied (or have none) and that are still `📋 To Do`. **Start with GLE-1.**
+Tasks whose dependencies are all satisfied (or have none) and that are still `📋 To Do`. All four unblocked when GLE-1 ✅ landed.
 
-- **GLE-1** — Test scaffolding & fixtures — *no dependencies; the foundation for everything else.*
+- **GLE-2**  — Section selection (`--sections`)     — *unblocked by GLE-1 ✅.*
+- **GLE-3**  — Reuse cached static sections          — *unblocked by GLE-1 ✅.*
+- **GLE-6**  — Sleep summary engine                  — *unblocked by GLE-1 ✅; pure function, easy to unit-test.*
+- **GLE-11** — LLM-readable line sizing              — *unblocked by GLE-1 ✅.*
 
-After GLE-1 lands, the following tasks unlock simultaneously (they have no inter-dependencies on each other):
-
-- GLE-2 — Section selection
-- GLE-3 — Cached static sections
-- GLE-6 — Sleep summary engine
-- GLE-11 — Line sizing
+These four have no inter-dependencies on each other and can be worked in parallel.
 
 ### 5.6 Critical path
 
