@@ -23,3 +23,8 @@ venv/
 
 # Logs
 *.log
+
+# Test artifacts
+.coverage
+.pytest_cache/
+htmlcov/
