@@ -1,4 +1,4 @@
-"""Allow ``python -m garmin_llm_export``."""
+"""Allow ``python -m src``."""
 
 import sys
 

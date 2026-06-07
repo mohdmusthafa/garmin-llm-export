@@ -25,7 +25,7 @@ from garmin_llm_export.config import settings as global_settings
 # ---------------------------------------------------------------------------
 # Logging: silence noisy loggers during tests, but keep errors visible
 # ---------------------------------------------------------------------------
-logging.getLogger("garmin_llm_export").setLevel(logging.WARNING)
+logging.getLogger("src").setLevel(logging.WARNING)
 
 
 # ---------------------------------------------------------------------------
