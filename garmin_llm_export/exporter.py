@@ -18,12 +18,14 @@ from garminconnect import Garmin
 from .cache import ExportCache, chunked_date_call
 from .config import settings
 from .formatters import (
+    add_derived_daily_fields,
     compact_daily,
     section,
     section_nodata,
     to_json,
     word_count,
 )
+from .summaries import build_sleep_summary
 from .rate_limit import get_limiter, safe_call
 
 log = logging.getLogger(__name__)
@@ -150,7 +152,8 @@ class GarminExporter:
     def __init__(self, api: Garmin, out_dir: Path, days: int, max_activities: int,
                  fetch_all: bool = False, cache: Optional[ExportCache] = None,
                  update_mode: bool = False,
-                 sections: Optional[Set[str]] = None):
+                 sections: Optional[Set[str]] = None,
+                 sleep_summary: bool = True):
         self.api = api
         self.out = out_dir
         self.max_activities = max_activities
@@ -163,6 +166,10 @@ class GarminExporter:
         self.update_base_date: Optional[str] = None  # end date of base export
         # None means "all sections"; a set means "only these section ids".
         self.sections_filter: Optional[Set[str]] = sections
+        # GLE-12: when True (default), full-mode exports gain a
+        # "Sleep Summaries" section after Daily Health. Compact mode
+        # always inlines the summary via GLE-9 derived fields.
+        self.sleep_summary = sleep_summary
 
         if update_mode:
             base_end = self._find_latest_export_end_date()
@@ -266,6 +273,27 @@ class GarminExporter:
         if self.sections_filter is None:
             return SECTION_REGISTRY
         return tuple(s for s in SECTION_REGISTRY if s.id in self.sections_filter)
+
+    def _user_timezone(self) -> Optional[str]:
+        """Return the user's IANA timezone, or None if unknown.
+
+        Cached after the first call -- the profile rarely changes during
+        a single export run, and `get_userprofile_settings` is a network
+        call we don't want to make 30 times.
+        """
+        if hasattr(self, "_cached_tz"):
+            return self._cached_tz  # type: ignore[attr-defined]
+        tz: Optional[str] = None
+        try:
+            settings_dict = safe_call(
+                self.api.get_userprofile_settings, label="profile_settings"
+            )
+        except Exception:
+            settings_dict = None
+        if isinstance(settings_dict, dict):
+            tz = settings_dict.get("timeZone")
+        self._cached_tz = tz  # type: ignore[attr-defined]
+        return tz
 
     def _get_fresh_cached_section(
         self, cache_key: Optional[str], display_name: str
@@ -393,6 +421,9 @@ class GarminExporter:
             total_kb = sum(p.stat().st_size for p in written) / 1024
             log.info(f"Total size: {total_kb:.0f} KB across {len(written)} files")
         else:
+            # GLE-11: post-process the TOC to include line ranges so an agent
+            # can `read --offset=N --limit=K` to jump to a specific section.
+            full_text = self._inject_toc_line_ranges(full_text, selected)
             out_path = self.out / filename
             out_path.parent.mkdir(parents=True, exist_ok=True)
             out_path.write_text(full_text, encoding="utf-8")
@@ -405,6 +436,93 @@ class GarminExporter:
         log.info(self.cache.summary())
         if self.errors:
             log.warning(f"{len(self.errors)} section(s) had errors")
+
+    def _inject_toc_line_ranges(
+        self,
+        text: str,
+        selected: tuple[SectionDef, ...],
+    ) -> str:
+        """Append a per-section line range to each TOC entry (GLE-11).
+
+        Walks the rendered text once to find each section header (the display
+        name on its own line) and computes the start/end line of the section
+        body. Then for every ``  N. <Display> -- <description>`` line in the
+        TOC, appends `` (lines A-B)``.
+
+        A section that has no header line in the text (e.g. filtered out,
+        empty file) is left untouched in the TOC.
+        """
+        if not selected:
+            return text
+
+        lines = text.split("\n")
+        # Map each display name to (line_start_1indexed, line_end_1indexed)
+        # where line_end is the last line of the section (inclusive). A
+        # section's body runs from the line of its header up to the line
+        # before the next section header.
+        ranges: dict[str, tuple[int, int]] = {}
+        # Section headers are a single line equal to the display name.
+        header_indices: list[tuple[int, str]] = []
+        for idx, line in enumerate(lines):
+            stripped = line.strip()
+            for sec in selected:
+                if stripped == sec.display:
+                    header_indices.append((idx, sec.display))
+                    break
+        for i, (start_zero, name) in enumerate(header_indices):
+            end_zero = (
+                header_indices[i + 1][0] - 1
+                if i + 1 < len(header_indices)
+                else len(lines) - 1
+            )
+            ranges[name] = (start_zero + 1, end_zero + 1)
+
+        if not ranges:
+            return text
+
+        # Find the TOC block: between "Table of Contents\n" and the blank
+        # line that ends the numbered list. Rewrite only the numbered
+        # entries (lines that start with whitespace + a digit + ". ").
+        # ``in_toc`` means "we have seen the Table of Contents header";
+        # ``in_toc_list`` means "we are now inside the numbered entries",
+        # which is the only region we rewrite. This avoids treating the
+        # blank line right after the header as the end of the list.
+        new_lines: list[str] = []
+        in_toc = False
+        in_toc_list = False
+        for line in lines:
+            if line.strip() == "Table of Contents":
+                in_toc = True
+                new_lines.append(line)
+                continue
+            if in_toc:
+                stripped = line.lstrip()
+                # A numbered TOC entry: "  N. Display -- description"
+                if (
+                    len(stripped) >= 3
+                    and stripped[0].isdigit()
+                    and ". " in stripped[:5]
+                ):
+                    in_toc_list = True
+                    matched = False
+                    for name, (a, b) in ranges.items():
+                        # Match the form "  N. <name> -- "
+                        if f"{stripped[:stripped.index('. ') + 2]}{name} --" in line:
+                            new_lines.append(f"{line} (lines {a}-{b})")
+                            matched = True
+                            break
+                    if not matched:
+                        new_lines.append(line)
+                    continue
+                # The first blank line after the list ends the TOC block
+                if in_toc_list and line.strip() == "":
+                    in_toc = False
+                    in_toc_list = False
+                new_lines.append(line)
+                continue
+            new_lines.append(line)
+
+        return "\n".join(new_lines)
 
     def _write_split(self, full_text: str, base_filename: str) -> list:
         """Split the export into multiple files, each under the word limit.
@@ -670,6 +788,9 @@ class GarminExporter:
         cached_days = 0
         if settings.compact:
             all_days = {}
+        # GLE-12: track per-day sleep payloads so we can emit a
+        # "Sleep Summaries" section in full mode at the end.
+        collected_sleep: list[tuple[str, dict]] = []
 
         for i in range(self.days):
             d = self.today - timedelta(days=i)
@@ -698,6 +819,12 @@ class GarminExporter:
 
             # Write to markdown
             if settings.compact:
+                # GLE-9: in compact mode, add derived fields to the day
+                # payload (sleep summary, HRV baselines, body-battery
+                # morning delta). The function is additive and prefixed
+                # with `_` so it never overwrites raw API data.
+                user_tz = self._user_timezone()
+                add_derived_daily_fields(day_data, tz=user_tz)
                 write_data = compact_daily(day_data)
                 merged = {display_names.get(k, k): v for k, v in write_data.items() if v is not None}
                 if merged:
@@ -706,6 +833,12 @@ class GarminExporter:
                 self.md.append(f"{ds}\n")
                 for key in endpoint_keys:
                     section(self.md, display_names[key], day_data.get(key), 4)
+                # GLE-12: collect the sleep payload so we can render a
+                # human-readable "Sleep Summaries" section after the
+                # per-day JSON dump. Skip days with no sleep record.
+                sleep_payload = day_data.get("sleep")
+                if isinstance(sleep_payload, dict):
+                    collected_sleep.append((ds, sleep_payload))
 
             # Progress reporting -- frequent early on, then every 25 days
             done = i + 1
@@ -732,6 +865,76 @@ class GarminExporter:
                 self.md.append(f"{to_json(all_days)}\n")
             else:
                 section_nodata(self.md, "Daily Health")
+        else:
+            # GLE-12: full-mode exports gain a "Sleep Summaries" section
+            # right after the per-day JSON. Each night gets a 3-5 line
+            # prose block derived from the GLE-6 summary engine, so an
+            # LLM can scan trends without parsing the raw sleep DTO.
+            self._render_sleep_summaries(collected_sleep)
+
+    def _render_sleep_summaries(
+        self, collected_sleep: "list[tuple[str, dict]]"
+    ) -> None:
+        """Emit the "Sleep Summaries" prose block in full mode (GLE-12).
+
+        Each night gets a 3-5 line block: bedtime, wake, total sleep,
+        sleep score, and a short verdict. Days with no sleep record are
+        skipped. When ``self.sleep_summary`` is False (via --no-sleep-summary)
+        the section is omitted entirely.
+        """
+        if not self.sleep_summary:
+            return
+        if not collected_sleep:
+            return
+
+        self.md.append("\nSleep Summaries\n")
+        self.md.append(
+            "Pre-computed nightly summaries from the GLE-6 engine. "
+            "Use these for trend scanning; the raw Sleep DTOs above are "
+            "the source of truth.\n"
+        )
+
+        user_tz = self._user_timezone()
+        for ds, payload in collected_sleep:
+            summary = build_sleep_summary(payload, tz=user_tz)
+            if not summary:
+                continue
+            self.md.append(f"{ds}\n")
+            self._emit_sleep_summary_block(summary)
+
+    def _emit_sleep_summary_block(self, summary: dict) -> None:
+        """Render one night's summary as 3-5 lines of plain prose (GLE-12).
+
+        The block is intentionally low-cardinality: bedtime, wake, total
+        sleep, score, and verdict. Stage percentages and vitals are
+        intentionally omitted here -- they're already in the raw DTO
+        above, and the prose block's job is to be scannable, not exhaustive.
+        """
+        verdict = summary.get("verdict")
+        ds = summary.get("date", "?")
+        bedtime = summary.get("bedtime_local")
+        wake = summary.get("wake_local")
+        asleep_seconds = summary.get("asleep_seconds")
+        score = (summary.get("score") or {}).get("overall")
+
+        parts: list[str] = [f"Night of {ds}."]
+        if bedtime or wake:
+            window = " -> ".join(p for p in (bedtime, wake) if p)
+            if window:
+                parts.append(f"Window: {window}.")
+        if isinstance(asleep_seconds, int) and asleep_seconds > 0:
+            hours = asleep_seconds / 3600
+            parts.append(f"Total sleep: {hours:.1f} h.")
+        if isinstance(score, (int, float)):
+            qualifier = (summary.get("score") or {}).get("qualifier") or ""
+            q = f" ({qualifier.lower()})" if qualifier else ""
+            parts.append(f"Sleep score: {int(score)}{q}.")
+        if verdict:
+            parts.append(f"Verdict: {verdict}.")
+        self.md.append(" ".join(parts) + "\n")
+        # Blank line so the next night is visually separated.
+        self.md.append("\n")
+
 
     # ===================================================================
     # Activities -- complete data for every activity

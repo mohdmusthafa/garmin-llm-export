@@ -21,6 +21,18 @@ from .exporter import GarminExporter, SECTION_REGISTRY
 from .presets import FOCUS_PRESETS, FOCUS_PRESET_DESCRIPTIONS, expand_focus, list_presets
 from .rate_limit import configure_limiter
 
+# Lazy import: the last-sleep writer is small but pulls in zoneinfo, so we
+# keep the CLI start-up time tight.
+_last_sleep_writer = None
+
+
+def _get_last_sleep_writer():
+    global _last_sleep_writer
+    if _last_sleep_writer is None:
+        from . import last_sleep as _last_sleep
+        _last_sleep_writer = _last_sleep.write_last_sleep_file
+    return _last_sleep_writer
+
 log = logging.getLogger("garmin_llm_export")
 
 
@@ -33,6 +45,7 @@ Common queries:
   %(prog)s                         Last 30 days, 100 activities
   %(prog)s --days 7 --compact      Last week, LLM-friendly size
   %(prog)s --focus sleep --days 2  Last night's sleep only (< 30 API calls)
+  %(prog)s --last-sleep            One-file sleep summary, ~10 KB
   %(prog)s --all --split           Full history for NotebookLM
   %(prog)s --update                Incremental since last export
 
@@ -107,6 +120,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--update", action="store_true",
         help="Export only new data since last export (implies --compact).",
     )
+    out_group.add_argument(
+        "--last-sleep", action="store_true",
+        help=(
+            "Write a small (~10 KB) plain-prose summary of last night's sleep "
+            "to garmin_last_sleep_<timestamp>.txt."
+        ),
+    )
+    out_group.add_argument(
+        "--no-sleep-summary", dest="sleep_summary", action="store_false",
+        help="Skip the 'Sleep Summaries' section in full-mode exports (GLE-12).",
+    )
 
     # --- Caching and pacing ---------------------------------------------
     cache_group = parser.add_argument_group("Caching and pacing")
@@ -163,6 +187,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
+    # --sleep-summary is True by default; --no-sleep-summary flips it
+    if not hasattr(args, "sleep_summary"):
+        args.sleep_summary = True
+
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",
@@ -184,6 +212,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.focus and args.sections:
         parser.error("--focus and --sections are mutually exclusive")
 
+    # --last-sleep and --focus/--sections are mutually exclusive (it picks
+    # its own subset).
+    if args.last_sleep and (args.focus or args.sections):
+        parser.error("--last-sleep is mutually exclusive with --focus and --sections")
+
     # --focus validation against FOCUS_PRESETS (argparse already enforces choices)
     # --sections validation
     if args.sections:
@@ -198,10 +231,15 @@ def main(argv: list[str] | None = None) -> int:
         sections_filter: set[str] | None = set(requested)
     elif args.focus:
         sections_filter = set(expand_focus(args.focus))
+    elif args.last_sleep:
+        # GLE-7: --last-sleep is a shortcut that sets days=2, sections=daily_health
+        # and writes a small summary file at the end.
+        sections_filter = {"daily_health"}
+        args.days = 2
     else:
         sections_filter = None
 
-    compact = args.compact or args.split or args.update
+    compact = args.compact or args.split or args.update or args.last_sleep
     settings.compact = compact
     settings.split = args.split
     settings.update = args.update
@@ -240,6 +278,7 @@ def main(argv: list[str] | None = None) -> int:
         cache=cache,
         update_mode=settings.update,
         sections=sections_filter,
+        sleep_summary=args.sleep_summary,
     )
     try:
         exporter.run()
@@ -247,6 +286,14 @@ def main(argv: list[str] | None = None) -> int:
         print()
         log.info("Interrupted -- cached data saved, re-run to continue")
         return 130
+
+    if args.last_sleep:
+        write_last_sleep = _get_last_sleep_writer()
+        try:
+            write_last_sleep(cache, out)
+        except Exception as exc:  # pragma: no cover - defensive
+            log.warning("Could not write --last-sleep file: %s", exc)
+
     return 0
 
 

@@ -13,6 +13,10 @@ class ExportSettings:
     split: bool = False
     update: bool = False
     split_word_limit: int = 480_000  # NotebookLM 500K word limit with margin
+    # Maximum line length, in characters, for any JSON in the output (GLE-11).
+    # Lines longer than this defeat `grep` and the `read` tool of LLM agents.
+    # 2000 chars is a comfortable bound for human eyes and most agents.
+    line_budget: int = 2000
 
 
 settings = ExportSettings()

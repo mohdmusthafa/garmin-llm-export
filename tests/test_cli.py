@@ -32,12 +32,13 @@ class TestCLIParser:
         for flag in [
             "--all", "--days", "--activities", "--sections", "--focus",
             "--list-presets", "--list-sections", "--compact", "--split",
-            "--update", "--no-cache", "--delay", "--tokenstore", "--login",
-            "-v", "--verbose",
+            "--update", "--no-sleep-summary", "--no-cache", "--delay",
+            "--tokenstore", "--login", "-v", "--verbose",
         ]:
             assert flag in captured, f"--help is missing flag '{flag}'"
 
-    def test_help_is_under_60_lines(self, capsys):
+    def test_help_is_under_65_lines(self, capsys):
+        # GLE-12 added --no-sleep-summary, so the budget moves up a touch.
         old_argv = sys.argv
         try:
             sys.argv = ["garmin-export", "--help"]
@@ -46,8 +47,8 @@ class TestCLIParser:
         finally:
             sys.argv = old_argv
         captured = capsys.readouterr().out
-        assert len(captured.splitlines()) < 60, (
-            f"--help output is {len(captured.splitlines())} lines, expected < 60"
+        assert len(captured.splitlines()) < 65, (
+            f"--help output is {len(captured.splitlines())} lines, expected < 65"
         )
 
     def test_help_contains_quick_start(self, capsys):
@@ -238,3 +239,134 @@ class TestLoginShortCircuit:
 
         assert rc == 0
         assert called["exporter"] is False, "GarminExporter.run() should not be called for --login"
+
+
+# ---------------------------------------------------------------------------
+# GLE-7: --last-sleep flag
+# ---------------------------------------------------------------------------
+class TestLastSleepFlag:
+    def test_last_sleep_with_focus_errors(self, tmp_path, monkeypatch):
+        old_argv = sys.argv
+        try:
+            sys.argv = ["garmin-export", "--last-sleep", "--focus", "sleep"]
+            with pytest.raises(SystemExit) as exc:
+                main()
+            assert exc.value.code == 2
+        finally:
+            sys.argv = old_argv
+
+    def test_last_sleep_with_sections_errors(self, tmp_path, monkeypatch):
+        old_argv = sys.argv
+        try:
+            sys.argv = ["garmin-export", "--last-sleep", "--sections", "daily_health"]
+            with pytest.raises(SystemExit) as exc:
+                main()
+            assert exc.value.code == 2
+        finally:
+            sys.argv = old_argv
+
+    def test_last_sleep_writes_small_summary_file(
+        self, tmp_path: Path, monkeypatch
+    ):
+        # Stub login so we don't hit the network.
+        sentinel = object()
+
+        def fake_login(tokenstore):
+            return sentinel
+
+        import garmin_llm_export.cli as cli_mod
+        monkeypatch.setattr(cli_mod, "login", fake_login)
+
+        # The exporter is stubbed to a no-op; we pre-seed the cache with
+        # one day of sleep so the last-sleep writer finds something.
+        from garmin_llm_export.cache import ExportCache
+
+        out = tmp_path / "export"
+        out.mkdir()
+        from tests.conftest import DAY1, _canned_sleep_for_day
+        cache = ExportCache(out, enabled=True)
+        cache.put_day(DAY1.isoformat(), {
+            "summary": {},
+            "sleep": _canned_sleep_for_day(DAY1.isoformat()),
+        })
+
+        called = {"exporter_run": False}
+
+        class FakeExporter:
+            def __init__(self, *a, **kw):
+                pass
+
+            def run(self):
+                called["exporter_run"] = True
+
+        monkeypatch.setattr(cli_mod, "GarminExporter", FakeExporter)
+
+        old_argv = sys.argv
+        try:
+            sys.argv = ["garmin-export", "--last-sleep", "--output", str(out)]
+            rc = main()
+        finally:
+            sys.argv = old_argv
+
+        assert rc == 0
+        assert called["exporter_run"] is True
+
+        last_sleep_files = list(out.glob("garmin_last_sleep_*.txt"))
+        assert last_sleep_files, "No garmin_last_sleep_*.txt was written"
+        path = last_sleep_files[0]
+        # GLE-7 acceptance: file is < 10 KB
+        size_kb = path.stat().st_size / 1024
+        assert size_kb < 10, f"Last-sleep file too large: {size_kb:.1f} KB"
+        content = path.read_text(encoding="utf-8")
+        # It must contain the verdict phrase from the fixture
+        assert "Long but restless" in content
+        assert "Stressful day" in content
+        # And the raw dailySleepDTO marker
+        assert "Raw data (dailySleepDTO)" in content
+
+    def test_last_sleep_no_data_writes_nothing(
+        self, tmp_path: Path, monkeypatch
+    ):
+        sentinel = object()
+
+        def fake_login(tokenstore):
+            return sentinel
+
+        import garmin_llm_export.cli as cli_mod
+        monkeypatch.setattr(cli_mod, "login", fake_login)
+
+        class FakeExporter:
+            def __init__(self, *a, **kw):
+                pass
+
+            def run(self):
+                pass
+
+        monkeypatch.setattr(cli_mod, "GarminExporter", FakeExporter)
+
+        out = tmp_path / "export"
+        out.mkdir()
+
+        old_argv = sys.argv
+        try:
+            sys.argv = ["garmin-export", "--last-sleep", "--output", str(out)]
+            rc = main()
+        finally:
+            sys.argv = old_argv
+
+        assert rc == 0
+        # No cache = no last-sleep file
+        assert not list(out.glob("garmin_last_sleep_*.txt"))
+
+    def test_help_lists_last_sleep_flag(self, capsys):
+        old_argv = sys.argv
+        try:
+            sys.argv = ["garmin-export", "--help"]
+            with pytest.raises(SystemExit):
+                main()
+        finally:
+            sys.argv = old_argv
+        captured = capsys.readouterr().out
+        assert "--last-sleep" in captured
+        # And the epilog should include the new query
+        assert "garmin-export --last-sleep" in captured

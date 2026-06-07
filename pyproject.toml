@@ -1,6 +1,6 @@
 [project]
 name = "garmin-llm-export"
-version = "0.1.0"
+version = "0.2.0-alpha"
 description = "Export Garmin Connect health and fitness data as LLM-readable plain text"
 readme = "README.md"
 license = { text = "Apache-2.0" }
@@ -30,6 +30,7 @@ dev = [
 
 [project.scripts]
 garmin-export = "garmin_llm_export.cli:main"
+garmin-sleep = "garmin_llm_export.sleep_cli:main"
 
 [build-system]
 requires = ["hatchling"]

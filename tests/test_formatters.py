@@ -12,6 +12,8 @@ import pytest
 
 from garmin_llm_export import formatters
 from garmin_llm_export.formatters import (
+    _longest_line,
+    add_derived_daily_fields,
     compact_daily,
     downsample_timeseries,
     section,
@@ -19,6 +21,7 @@ from garmin_llm_export.formatters import (
     strip_empty,
     to_json,
     word_count,
+    wrap_json,
 )
 
 
@@ -237,3 +240,176 @@ class TestSection:
         md = []
         section_nodata(md, "Sleep")
         assert md == ["No data available.\n"]
+
+
+# ---------------------------------------------------------------------------
+# GLE-11: line-budget aware JSON
+# ---------------------------------------------------------------------------
+class TestLongestLine:
+    def test_empty(self):
+        assert _longest_line("") == 0
+
+    def test_single_line(self):
+        assert _longest_line("hello world") == 11
+
+    def test_picks_max(self):
+        assert _longest_line("a\nbb\nccc") == 3
+
+
+class TestWrapJson:
+    def test_short_input_unchanged(self):
+        data = {"a": 1, "b": [1, 2, 3]}
+        result = wrap_json(data, max_line=2000)
+        parsed = json.loads(result)
+        assert parsed == data
+
+    def test_long_array_breaks_one_per_line(self):
+        # 100 elements of ~30 chars each => one giant line in json.dumps
+        data = [{"k": i, "v": f"value-{i}"} for i in range(100)]
+        result = wrap_json(data, max_line=200)
+        # Each element should now be on its own line
+        assert "\n" in result
+        assert _longest_line(result) <= 200
+        # And the data round-trips
+        assert json.loads(result) == data
+
+    def test_long_dict_breaks_one_per_line(self):
+        data = {f"key_{i:03d}": f"value_{i}" for i in range(100)}
+        result = wrap_json(data, max_line=200)
+        assert _longest_line(result) <= 200
+        assert json.loads(result) == data
+
+    def test_primitives_passthrough(self):
+        assert wrap_json("hello", max_line=2000) == '"hello"'
+        assert wrap_json(42, max_line=2000) == "42"
+        assert wrap_json(None, max_line=2000) == "null"
+
+    def test_no_line_exceeds_budget(self):
+        # Fuzz: a 5000-element array
+        data = list(range(5000))
+        result = wrap_json(data, max_line=500)
+        assert _longest_line(result) <= 500
+
+
+class TestToJsonLineBudget:
+    def test_to_json_breaks_long_arrays(self, reset_settings):
+        # A single long line in full mode should be wrapped to obey the budget
+        data = [{"k": i, "v": f"value_{i}"} for i in range(200)]
+        result = to_json(data)
+        assert _longest_line(result) <= reset_settings.line_budget
+
+    def test_to_json_compact_mode_also_respects_budget(self, reset_settings):
+        # GLE-11: no line in any exported file exceeds the budget, even
+        # in compact mode. Compact mode is about stripping empties, not
+        # about preserving a single line at all costs.
+        reset_settings.compact = True
+        data = [{"k": i, "v": f"value_{i}"} for i in range(200)]
+        result = to_json(data)
+        assert _longest_line(result) <= reset_settings.line_budget
+        # Round-trips
+        assert json.loads(result) == data
+
+    def test_to_json_short_output_passthrough(self, reset_settings):
+        # Small data should NOT trigger the wrap; it should look like the
+        # previous default ``json.dumps(indent=2)`` output.
+        data = {"a": 1, "b": [1, 2]}
+        result = to_json(data)
+        assert "\n" in result
+        # Indented key on its own line
+        assert '"a": 1' in result
+
+
+# ---------------------------------------------------------------------------
+# GLE-9: derived fields in Daily Health
+# ---------------------------------------------------------------------------
+class TestAddDerivedDailyFields:
+    def _sleep_payload(self) -> dict:
+        return {
+            "dailySleepDTO": {
+                "calendarDate": "2026-06-05",
+                "sleepTimeSeconds": 32580,
+                "deepSleepSeconds": 3420,
+                "lightSleepSeconds": 22500,
+                "remSleepSeconds": 6660,
+                "awakeSleepSeconds": 1920,
+                "sleepStartTimestampGMT": 1780605360000,
+                "sleepEndTimestampGMT": 1780639860000,
+                "averageRespirationValue": 15.0,
+                "awakeCount": 2,
+                "avgSleepStress": 20.0,
+                "sleepScoreFeedback": "NEGATIVE_LONG_BUT_RESTLESS",
+                "sleepScoreInsight": "NEGATIVE_STRESSFUL_DAY",
+                "sleepScores": {
+                    "overall": {"value": 75, "qualifierKey": "FAIR"},
+                },
+            },
+            "restingHeartRate": 71,
+            "avgOvernightHrv": 34.0,
+            "hrvStatus": "UNBALANCED",
+            "bodyBatteryChange": 57,
+        }
+
+    def test_adds_sleep_summary(self):
+        day = {"sleep": self._sleep_payload()}
+        add_derived_daily_fields(day, tz="Asia/Kolkata")
+        assert "_summary" in day["sleep"]
+        assert day["sleep"]["_summary"]["date"] == "2026-06-05"
+        assert "Long but restless" in day["sleep"]["_summary"]["verdict"]
+
+    def test_preserves_raw_sleep_keys(self):
+        day = {"sleep": self._sleep_payload()}
+        add_derived_daily_fields(day, tz="Asia/Kolkata")
+        # Original keys are still there
+        assert "dailySleepDTO" in day["sleep"]
+        assert "restingHeartRate" in day["sleep"]
+        # And the new key is additive
+        assert "_summary" in day["sleep"]
+
+    def test_adds_hrv_normalised_fields(self):
+        day = {"hrv": {
+            "hrvSummary": {
+                "weeklyAvg": 34,
+                "baseline": {"balancedLow": 35, "balancedUpper": 45},
+                "status": "UNBALANCED",
+            },
+        }}
+        add_derived_daily_fields(day)
+        assert day["hrv"]["_weekly_avg"] == 34
+        assert day["hrv"]["_baseline_low"] == 35
+        assert day["hrv"]["_baseline_high"] == 45
+        assert day["hrv"]["_status"] == "UNBALANCED"
+
+    def test_hrv_missing_baseline_is_ok(self):
+        day = {"hrv": {"hrvSummary": {"weeklyAvg": 40, "status": "BALANCED"}}}
+        add_derived_daily_fields(day)
+        assert day["hrv"]["_weekly_avg"] == 40
+        assert day["hrv"]["_status"] == "BALANCED"
+        assert "_baseline_low" not in day["hrv"]
+
+    def test_adds_body_battery_morning_delta_list_form(self):
+        day = {"body_battery": [{"date": "2026-06-05", "charged": 62, "drained": 26}]}
+        add_derived_daily_fields(day)
+        assert day["body_battery"][0]["_morning_charge_delta"] == 62
+
+    def test_adds_body_battery_morning_delta_dict_form(self):
+        day = {"body_battery": {"charged": 50, "drained": 20}}
+        add_derived_daily_fields(day)
+        assert day["body_battery"]["_morning_charge_delta"] == 50
+
+    def test_no_sleep_key_does_not_crash(self):
+        day = {"hrv": {"hrvSummary": {"weeklyAvg": 30, "status": "POOR"}}}
+        add_derived_daily_fields(day)
+        # HRV is still annotated even without sleep
+        assert day["hrv"]["_status"] == "POOR"
+
+    def test_returns_input_unchanged_for_non_dict(self):
+        assert add_derived_daily_fields("not a dict") == "not a dict"
+        assert add_derived_daily_fields(42) == 42
+
+    def test_idempotent(self):
+        day = {"sleep": self._sleep_payload()}
+        add_derived_daily_fields(day, tz="Asia/Kolkata")
+        first_summary = day["sleep"]["_summary"]
+        add_derived_daily_fields(day, tz="Asia/Kolkata")
+        # Second call should not overwrite the existing _summary
+        assert day["sleep"]["_summary"] is first_summary

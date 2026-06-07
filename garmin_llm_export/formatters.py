@@ -107,7 +107,12 @@ def compact_daily(data: Any) -> Any:
 
 
 def to_json(data: Any) -> str:
-    """Serialize to JSON; compact mode strips empties and uses single-line output."""
+    """Serialize to JSON; compact mode strips empties and uses single-line output.
+
+    Honours :attr:`settings.line_budget` (GLE-11): if a pretty-printed line
+    exceeds the budget, ``to_json`` falls back to ``wrap_json`` which breaks
+    long arrays and objects onto multiple lines.
+    """
     if settings.compact:
         data = strip_empty(data)
     if settings.split and isinstance(data, dict) and data:
@@ -117,7 +122,125 @@ def to_json(data: Any) -> str:
         lines = [f"  {json.dumps(item, default=str, ensure_ascii=False)}" for item in data]
         return "[\n" + ",\n".join(lines) + "\n]"
     indent = None if settings.compact else 2
-    return json.dumps(data, indent=indent, default=str, ensure_ascii=False)
+    rendered = json.dumps(data, indent=indent, default=str, ensure_ascii=False)
+    if _longest_line(rendered) <= settings.line_budget:
+        return rendered
+    # GLE-11: any output line must fit the line budget, even in compact
+    # mode. ``wrap_json`` breaks long arrays/dicts onto one-per-line so
+    # the longest line is well below the budget.
+    return wrap_json(data, max_line=settings.line_budget)
+
+
+def _longest_line(text: str) -> int:
+    """Return the length of the longest line in `text`. 0 for empty."""
+    if not text:
+        return 0
+    return max(len(line) for line in text.splitlines() or [""])
+
+
+# ---------------------------------------------------------------------------
+# GLE-9: derived fields in Daily Health (compact mode)
+# ---------------------------------------------------------------------------
+def add_derived_daily_fields(
+    day_data: dict,
+    *,
+    tz: str | None = None,
+) -> dict:
+    """Augment a per-day health dict with prefixed computed fields.
+
+    In compact mode the exporter calls this once per day, after the raw
+    endpoints have been fetched. The function is additive: existing
+    keys are left alone, and new keys are added with a ``_`` prefix
+    to mark them as computed.
+
+    Currently adds:
+      - ``sleep._summary``           : :func:`build_sleep_summary` output
+      - ``hrv._weekly_avg``          : 7-day average overnight HRV
+      - ``hrv._baseline_low``        : lower bound of balanced HRV
+      - ``hrv._baseline_high``       : upper bound of balanced HRV
+      - ``hrv._status``              : BALANCED / UNBALANCED / POOR
+      - ``body_battery._morning_charge_delta`` : charge gained overnight
+    """
+    if not isinstance(day_data, dict):
+        return day_data
+
+    # Sleep: full GLE-6 summary
+    sleep = day_data.get("sleep")
+    if isinstance(sleep, dict) and "_summary" not in sleep:
+        # Local import to avoid a circular import (summaries -> formatters)
+        from .summaries import build_sleep_summary
+
+        summary = build_sleep_summary(sleep, tz=tz)
+        if summary is not None:
+            sleep["_summary"] = summary
+
+    # HRV: normalised fields
+    hrv = day_data.get("hrv")
+    if isinstance(hrv, dict):
+        hrv_summary = hrv.get("hrvSummary") or {}
+        if isinstance(hrv_summary, dict):
+            if "weeklyAvg" in hrv_summary and "_weekly_avg" not in hrv:
+                hrv["_weekly_avg"] = hrv_summary["weeklyAvg"]
+            baseline = hrv_summary.get("baseline") or {}
+            if isinstance(baseline, dict):
+                if "balancedLow" in baseline and "_baseline_low" not in hrv:
+                    hrv["_baseline_low"] = baseline["balancedLow"]
+                if "balancedUpper" in baseline and "_baseline_high" not in hrv:
+                    hrv["_baseline_high"] = baseline["balancedUpper"]
+            if "status" in hrv_summary and "_status" not in hrv:
+                hrv["_status"] = hrv_summary["status"]
+
+    # Body Battery: morning charge delta
+    bb = day_data.get("body_battery")
+    if isinstance(bb, list) and bb:
+        first = bb[0]
+        if isinstance(first, dict) and "charged" in first:
+            if "_morning_charge_delta" not in first:
+                first["_morning_charge_delta"] = first["charged"]
+    elif isinstance(bb, dict):
+        if "charged" in bb and "_morning_charge_delta" not in bb:
+            bb["_morning_charge_delta"] = bb["charged"]
+
+    return day_data
+
+
+def wrap_json(
+    data: Any,
+    *,
+    max_line: int = 2000,
+    indent: int = 1,
+) -> str:
+    """Pretty-print `data` but never let any line exceed `max_line` chars (GLE-11).
+
+    Strategy: render with a small indent, then if any line is still over the
+    budget, fall back to a "one element per line" layout for arrays of
+    objects/dicts. This is greedy -- it tries the most compact layout first
+    and only "explodes" the parts that are still too long.
+    """
+    if data is None or isinstance(data, (str, int, float, bool)):
+        return json.dumps(data, default=str, ensure_ascii=False)
+
+    try:
+        rendered = json.dumps(data, indent=indent, default=str, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return json.dumps(str(data), ensure_ascii=False)
+
+    if _longest_line(rendered) <= max_line:
+        return rendered
+
+    if isinstance(data, list) and data:
+        # Explode: one item per line
+        parts = [json.dumps(item, default=str, ensure_ascii=False) for item in data]
+        return "[\n" + ",\n".join(parts) + "\n]"
+
+    if isinstance(data, dict) and data:
+        parts = [
+            f"{json.dumps(k, ensure_ascii=False)}: {json.dumps(v, default=str, ensure_ascii=False)}"
+            for k, v in data.items()
+        ]
+        return "{\n" + ",\n".join(parts) + "\n}"
+
+    return rendered
 
 
 def section(md: list[str], title: str, data: Any, level: int = 3) -> None:

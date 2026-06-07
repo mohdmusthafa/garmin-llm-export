@@ -76,7 +76,7 @@ GLE-5  CLI help revamp     GLE-10 Python API helper
 ## 5. Task Tracker — Implementation Status
 
 **Last updated:** 2026-06-07
-**Overall progress:** 5 / 16 tasks complete (31 %)
+**Overall progress:** 12 / 16 tasks complete (75 %)
 
 This section is the single source of truth for what has been built. Update it whenever a task moves state.
 
@@ -95,16 +95,16 @@ This section is the single source of truth for what has been built. Update it wh
 | Phase | Tasks | ✅ Done | 🚧 In Progress | ⏸ Blocked | 📋 To Do | % Complete |
 |---|---|---|---|---|---|---|
 | Phase 1 — Foundation | 5 | 5 | 0 | 0 | 0 | **100 %** |
-| Phase 2 — Sleep First-Class | 7 | 0 | 0 | 0 | 7 | 0 % |
+| Phase 2 — Sleep First-Class | 7 | 7 | 0 | 0 | 0 | **100 %** |
 | Phase 3 — Polish | 4 | 0 | 0 | 0 | 4 | 0 % |
-| **Total** | **16** | **5** | **0** | **0** | **11** | **31 %** |
+| **Total** | **16** | **12** | **0** | **0** | **4** | **75 %** |
 
 ### 5.3 Progress by epic
 
 | Epic | Tasks | Done | % Complete |
 |---|---|---|---|
 | A — Foundations | 5 | 5 | **100 %** |
-| B — Sleep First-Class | 7 | 0 | 0 % |
+| B — Sleep First-Class | 7 | 7 | **100 %** |
 | C — Polish | 4 | 0 | 0 % |
 
 ### 5.4 Full task status
@@ -116,13 +116,13 @@ This section is the single source of truth for what has been built. Update it wh
 | GLE-3  | Reuse cached static sections      | 1 | A | P1 | S  | ✅ Done   | GLE-1                       | `cache.section_age()` + `is_section_fresh()`; per-section max-age policy. |
 | GLE-4  | Focus presets (`--focus`)         | 1 | A | P0 | S  | ✅ Done   | GLE-2                       | New `presets.py`; sleep/recovery/training/body/all. |
 | GLE-5  | CLI help & discovery revamp       | 1 | A | P2 | XS | ✅ Done   | GLE-2, GLE-4                | Argument groups, `--list-presets`, `--list-sections`, quick-start epilog. |
-| GLE-6  | Sleep summary engine              | 2 | B | P0 | M  | 📋 To Do | GLE-1                       | Pure function, easy to unit-test |
-| GLE-7  | `--last-sleep` flag               | 2 | B | P0 | S  | 📋 To Do | GLE-2, GLE-3, GLE-6         | Headline feature |
-| GLE-8  | `garmin-sleep` subcommand         | 2 | B | P1 | S  | 📋 To Do | GLE-7                       | |
-| GLE-9  | Derived fields in Daily Health    | 2 | B | P1 | M  | 📋 To Do | GLE-6                       | |
-| GLE-10 | Python API helper                 | 2 | B | P1 | XS | 📋 To Do | GLE-6                       | |
-| GLE-11 | LLM-readable line sizing          | 2 | B | P0 | S  | 📋 To Do | GLE-1                       | |
-| GLE-12 | Restructure Sleep section         | 2 | B | P1 | S  | 📋 To Do | GLE-6                       | |
+| GLE-6  | Sleep summary engine              | 2 | B | P0 | M  | ✅ Done   | GLE-1                       | Pure function in `summaries.py`; verdict phrases, stage pcts, vitals. 32 unit tests. |
+| GLE-7  | `--last-sleep` flag               | 2 | B | P0 | S  | ✅ Done   | GLE-2, GLE-3, GLE-6         | `last_sleep.py` writer; ~10 KB output, plain-prose. |
+| GLE-8  | `garmin-sleep` subcommand         | 2 | B | P1 | S  | ✅ Done   | GLE-7                       | `sleep_cli.py` + pyproject entry; `--days N` for multi-night. |
+| GLE-9  | Derived fields in Daily Health    | 2 | B | P1 | M  | ✅ Done   | GLE-6                       | `add_derived_daily_fields` adds `_summary`, `_weekly_avg`, `_morning_charge_delta`. Compact-only. |
+| GLE-10 | Python API helper                 | 2 | B | P1 | XS | ✅ Done   | GLE-6                       | `get_latest_sleep_summary(api, *, tz=None)` in `__init__.py`. |
+| GLE-11 | LLM-readable line sizing          | 2 | B | P0 | S  | ✅ Done   | GLE-1                       | `line_budget=2000`, `wrap_json`, TOC line ranges. |
+| GLE-12 | Restructure Sleep section         | 2 | B | P1 | S  | ✅ Done   | GLE-6                       | Full-mode "Sleep Summaries" prose block; `--no-sleep-summary` to skip. |
 | GLE-13 | Local timestamp formatting        | 3 | C | P1 | S  | 📋 To Do | GLE-11                      | |
 | GLE-14 | Schema/key consistency            | 3 | C | P2 | XS | 📋 To Do | GLE-9                       | |
 | GLE-15 | Output index file                 | 3 | C | P2 | S  | 📋 To Do | GLE-11, GLE-14              | |
@@ -130,12 +130,12 @@ This section is the single source of truth for what has been built. Update it wh
 
 ### 5.5 Ready-to-pick queue
 
-Tasks whose dependencies are all satisfied (or have none) and that are still `📋 To Do`. With Phase 1 done, the unblocked Phase 2 tasks are:
+Tasks whose dependencies are all satisfied (or have none) and that are still `📋 To Do`. With Phase 2 done, the unblocked Phase 3 tasks are:
 
-- **GLE-6**  — Sleep summary engine                  — *unblocked now; pure function, easy to unit-test.*
-- **GLE-11** — LLM-readable line sizing              — *unblocked now.*
-
-The other Phase 2 tasks (GLE-7, GLE-8, GLE-9, GLE-10, GLE-12) unblock once GLE-6 lands.
+- **GLE-13** — Local timestamp formatting          — *unblocked now; GLE-11 done.*
+- **GLE-14** — Schema/key consistency              — *unblocked now; GLE-9 done.*
+- **GLE-15** — Output index file                   — *unblocked now; GLE-11 + GLE-14 done once GLE-14 lands.*
+- **GLE-16** — README & SKILL.md update            — *unblocked now; GLE-4/7/8/10 all done.*
 
 ### 5.6 Critical path
 
@@ -327,7 +327,7 @@ Wall-clock estimate: ~3.5 working days from GLE-1 to a usable `--last-sleep`.
 - **Owner:** AI agent
 - **Effort:** M (1.5 days)
 - **Dependencies:** GLE-1
-- **Status:** To Do
+- **Status:** ✅ Done
 
 **Problems addressed:** #12, #13, #14, #17 (no summary, no derived fields, no API helper).
 
@@ -366,7 +366,7 @@ Wall-clock estimate: ~3.5 working days from GLE-1 to a usable `--last-sleep`.
 - **Owner:** AI agent
 - **Effort:** S (0.5 day)
 - **Dependencies:** GLE-2, GLE-3, GLE-6
-- **Status:** To Do
+- **Status:** ✅ Done
 
 **Problems addressed:** #1, #2, #15, #16, #17 (the headline feature).
 
@@ -402,7 +402,7 @@ Wall-clock estimate: ~3.5 working days from GLE-1 to a usable `--last-sleep`.
 - **Owner:** AI agent
 - **Effort:** S (0.5 day)
 - **Dependencies:** GLE-7
-- **Status:** To Do
+- **Status:** ✅ Done
 
 **Problem addressed:** Discoverability & ergonomics — many users will type the word "sleep" first.
 
@@ -427,7 +427,7 @@ Wall-clock estimate: ~3.5 working days from GLE-1 to a usable `--last-sleep`.
 - **Owner:** AI agent
 - **Effort:** M (1 day)
 - **Dependencies:** GLE-6
-- **Status:** To Do
+- **Status:** ✅ Done
 
 **Problem addressed:** #13 (no derived fields anywhere in the export).
 
@@ -453,7 +453,7 @@ Wall-clock estimate: ~3.5 working days from GLE-1 to a usable `--last-sleep`.
 - **Owner:** AI agent
 - **Effort:** XS (0.25 day)
 - **Dependencies:** GLE-6
-- **Status:** To Do
+- **Status:** ✅ Done
 
 **Problem addressed:** #16 (no Python shortcut).
 
@@ -479,7 +479,7 @@ Wall-clock estimate: ~3.5 working days from GLE-1 to a usable `--last-sleep`.
 - **Owner:** AI agent
 - **Effort:** S (0.5 day)
 - **Dependencies:** GLE-1
-- **Status:** To Do
+- **Status:** ✅ Done
 
 **Problems addressed:** #5, #6, #10 (giant single lines defeat grep + read tool).
 
@@ -507,7 +507,7 @@ Wall-clock estimate: ~3.5 working days from GLE-1 to a usable `--last-sleep`.
 - **Owner:** AI agent
 - **Effort:** S (0.5 day)
 - **Dependencies:** GLE-6
-- **Status:** To Do
+- **Status:** ✅ Done
 
 **Problem addressed:** #11, #14 (no "Sleep Summary" section, no derived headline numbers).
 

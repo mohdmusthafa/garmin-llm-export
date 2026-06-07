@@ -69,6 +69,25 @@ class TestExporterRun:
         for section in EXPECTED_SECTIONS:
             assert section in content, f"Section '{section}' missing from TOC"
 
+    def test_full_export_toc_has_line_ranges(
+        self, mock_garmin_api, tmp_export_dir: Path, reset_settings
+    ):
+        # GLE-11: each TOC entry is followed by a (lines A-B) range so a
+        # downstream agent can `read --offset=N --limit=K` to jump to a
+        # specific section.
+        path = _run_full_export(mock_garmin_api, tmp_export_dir, days=2)
+        content = path.read_text(encoding="utf-8")
+        import re as _re
+        toc_lines = [
+            line for line in content.splitlines()
+            if _re.search(r"^\s+\d+\.\s+\S+.*--\s", line)
+        ]
+        assert toc_lines, "No TOC entries found"
+        for line in toc_lines:
+            assert "(lines " in line and ")" in line, (
+                f"TOC entry missing line range: {line!r}"
+            )
+
     def test_full_export_includes_header_lines(
         self, mock_garmin_api, tmp_export_dir: Path, reset_settings
     ):
@@ -104,6 +123,36 @@ class TestExporterRun:
         content = path.read_text(encoding="utf-8")
         # In compact mode, schema description mentions "single-line JSON"
         assert "single-line JSON" in content
+
+    def test_compact_mode_includes_sleep_summary_derived_field(
+        self, mock_garmin_api, tmp_export_dir: Path, reset_settings
+    ):
+        # GLE-9: in compact mode, each day's sleep payload gets a
+        # ``_summary`` sub-object with the GLE-6 summary.
+        from freezegun import freeze_time
+        # The mock's canned sleep data lives on 2026-06-04 and 2026-06-05,
+        # so we freeze "today" to 2026-06-05 and ask for 1 day of data.
+        with freeze_time("2026-06-05"):
+            reset_settings.compact = True
+            path = _run_full_export(mock_garmin_api, tmp_export_dir, days=1)
+        content = path.read_text(encoding="utf-8")
+        # The verdict phrase from the canned data should appear.
+        assert "Long but restless" in content
+        assert "Stressful day" in content
+        # And the verdict text is bound to a sleep summary, not just
+        # the raw dailySleepDTO. We probe for the score qualifier.
+        assert '"qualifier": "fair"' in content
+
+    def test_full_mode_has_no_sleep_summary_key(
+        self, mock_garmin_api, tmp_export_dir: Path, reset_settings
+    ):
+        # Regression: GLE-9 only adds the summary in compact mode.
+        # Full mode should be byte-identical to the pre-GLE-9 output.
+        path = _run_full_export(mock_garmin_api, tmp_export_dir, days=2)
+        content = path.read_text(encoding="utf-8")
+        assert '"_summary"' not in content
+        assert '"_weekly_avg"' not in content
+        assert '"_morning_charge_delta"' not in content
 
     def test_export_records_sleep_calls(
         self, mock_garmin_api, tmp_export_dir: Path, reset_settings
@@ -164,13 +213,96 @@ class TestExportSnapshot:
         # Computed on 2026-06-07 with the 2-day mock fixture, Python 3.13.12.
         # Update this hash only when the export shape changes intentionally,
         # and add a one-line note to the commit message explaining why.
-        # (The previous hash drifted due to a Python runtime difference, not
-        # a content change -- the current content is byte-identical to the
-        # pre-GLE-2/3/4/5 default export.)
+        # GLE-11 adds line ranges to TOC entries, so the hash drifts on
+        # purpose; the content below the TOC is unchanged.
+        # GLE-12 adds a "Sleep Summaries" section in full mode; the hash
+        # drifts again on purpose, but only when the mock returns a
+        # non-empty sleep payload. The 2-day mock is empty (no sleep
+        # DTOs at the frozen dates), so the hash should match GLE-11.
         expected_hash = (
-            "25d13ad0af00dcce42df47a87ffec1e91f8130ebddfe11a0a9232100ff5198c0"
+            "76152ed25b5ef9e51bb483547f099f75dc25a7467d739c77bfb3eeba357d4ea0"
         )
         assert actual_hash == expected_hash, (
             f"Golden hash drift. New hash: {actual_hash}. "
             f"Expected: {expected_hash}"
         )
+
+
+# ---------------------------------------------------------------------------
+# GLE-12: Restructure Sleep section in full export
+# ---------------------------------------------------------------------------
+class TestSleepSummarySection:
+    """GLE-12 adds a "Sleep Summaries" prose block in full-mode exports."""
+
+    def test_full_mode_includes_sleep_summary_section(
+        self, mock_garmin_api, tmp_export_dir: Path, reset_settings
+    ):
+        # The mock returns a sleep DTO on 2026-06-05; freeze time to
+        # 2026-06-05 so the day loop picks up that record.
+        from freezegun import freeze_time
+
+        with freeze_time("2026-06-05"):
+            exporter = GarminExporter(
+                mock_garmin_api, tmp_export_dir, days=1, max_activities=10
+            )
+            exporter.run()
+        path = sorted(tmp_export_dir.glob("garmin_export_*.txt"), reverse=True)[0]
+        content = path.read_text(encoding="utf-8")
+        # Section header is present
+        assert "Sleep Summaries" in content
+        # GLE-6 verdict phrase from the canned data is in the prose block
+        assert "Long but restless" in content or "Stressful day" in content
+        # Prose line pattern
+        assert "Night of 2026-06-05" in content
+        assert "Sleep score:" in content
+
+    def test_no_sleep_summary_flag_skips_section(
+        self, mock_garmin_api, tmp_export_dir: Path, reset_settings
+    ):
+        # Same as above but pass sleep_summary=False; section must be
+        # absent even though there is a real sleep record.
+        from freezegun import freeze_time
+
+        with freeze_time("2026-06-05"):
+            exporter = GarminExporter(
+                mock_garmin_api, tmp_export_dir, days=1, max_activities=10,
+                sleep_summary=False,
+            )
+            exporter.run()
+        path = sorted(tmp_export_dir.glob("garmin_export_*.txt"), reverse=True)[0]
+        content = path.read_text(encoding="utf-8")
+        assert "Sleep Summaries" not in content
+        assert "Night of 2026-06-05" not in content
+
+    def test_compact_mode_does_not_emit_section(
+        self, mock_garmin_api, tmp_export_dir: Path, reset_settings
+    ):
+        # GLE-9 inlines the summary into the day payload in compact mode,
+        # so GLE-12's "Sleep Summaries" section should NOT be emitted --
+        # that would be duplicate prose.
+        from freezegun import freeze_time
+
+        reset_settings.compact = True
+        with freeze_time("2026-06-05"):
+            exporter = GarminExporter(
+                mock_garmin_api, tmp_export_dir, days=1, max_activities=10
+            )
+            exporter.run()
+        path = sorted(tmp_export_dir.glob("garmin_export_*.txt"), reverse=True)[0]
+        content = path.read_text(encoding="utf-8")
+        # Section header is absent in compact mode.
+        assert "Sleep Summaries\n" not in content
+        # And the prose-block signature is absent.
+        assert "Night of 2026-06-05" not in content
+
+    def test_full_export_with_no_sleep_data_skips_silently(
+        self, mock_garmin_api, tmp_export_dir: Path, reset_settings
+    ):
+        # The 2-day mock returns empty sleep for both days, so the
+        # section is omitted without a "No data" marker (we don't want
+        # to clutter full exports with a "Sleep Summaries: No data"
+        # notice when the per-day JSON already showed empty Sleep fields).
+        path = _run_full_export(mock_garmin_api, tmp_export_dir, days=2)
+        content = path.read_text(encoding="utf-8")
+        assert "Sleep Summaries" not in content
+
