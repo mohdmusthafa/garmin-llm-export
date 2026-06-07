@@ -24,6 +24,16 @@ uv run garmin-export
 
 # 4. For NotebookLM: full history split into manageable files
 uv run garmin-export --all --split
+
+# 5. Sleep-focused quick export
+uv run garmin-export --focus sleep --days 7
+
+# 6. Plain-prose last night's sleep summary (stdout)
+uv run garmin-sleep
+
+# 7. Discover available focus presets and sections
+uv run garmin-export --list-presets
+uv run garmin-export --list-sections
 ```
 
 ## Core Commands
@@ -54,6 +64,13 @@ Options:
   --no-cache                Force full re-fetch, ignore resume cache
   --delay SEC               Base delay between API calls (default: 0.15)
   -v, --verbose             Debug logging
+  --focus PRESET            Export only sections matching preset (sleep/recovery/training/body/all)
+  --list-presets            List all available focus presets and exit
+  --list-sections           List all available sections and exit
+  --last-sleep              Write plain-prose last-night sleep summary to stdout and exit
+  --no-sleep-summary        Omit Sleep Summaries section from full export
+
+Also available: `uv run garmin-sleep` — shorthand for `--last-sleep`, outputs plain-prose.
 ```
 
 ## Output Format
@@ -125,6 +142,50 @@ uv run garmin-export --all --split
 Garmin's API may return 429 errors. To slow down:
 ```bash
 uv run garmin-export --all --delay 0.5  # Increase from default 0.15s
+```
+
+## Wake-Date Convention
+
+Sleep data in Garmin is anchored to the **sleep start time**, not the calendar day. A "wake date" of June 7 means the user went to bed on the evening of June 6 and woke up on the morning of June 7. When exporting sleep for analysis, the wake date is the key lookup anchor — the exporter automatically resolves the correct API date range using this convention.
+
+## Common Queries
+
+Cookbook for typical health questions:
+
+**1. How did I sleep last night?**
+```bash
+uv run garmin-sleep
+# → plain-prose stdout: "Lights out 10:43pm, deep sleep 1h42m, HRV 62ms, readiness 78..."
+```
+
+**2. My sleep trends over the past week**
+```bash
+uv run garmin-export --focus sleep --days 7 --compact
+# → export/sleep_section.txt with nightly deep/light/REM, HRV, SpO₂, restlessness
+```
+
+**3. Am I recovered enough to train hard?**
+```bash
+uv run garmin-export --focus recovery --days 3 --compact
+# → export/recovery_section.txt with HRV, resting HR, recovery score, body battery
+```
+
+**4. Recent training load and VO₂ max trends**
+```bash
+uv run garmin-export --focus training --days 14 --compact
+# → export/training_section.txt with training status, load, VO₂ max, race predictions
+```
+
+**5. Weight and body composition over the past month**
+```bash
+uv run garmin-export --focus body --days 30 --compact
+# → export/body_section.txt with weigh-ins, fat %, muscle mass
+```
+
+**6. Full health snapshot for NotebookLM upload**
+```bash
+uv run garmin-export --all --split
+# → multiple export/*_split_partNofM.txt files, each <500K words
 ```
 
 ## Troubleshooting

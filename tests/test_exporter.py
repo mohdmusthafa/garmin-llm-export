@@ -161,6 +161,17 @@ class TestExporterRun:
         # Sleep should be fetched once per day (2 days -> 2 calls)
         assert mock_garmin_api.call_count_by_label("sleep") == 2
 
+    def test_schema_string_lists_capital_sleep(
+        self, mock_garmin_api, tmp_export_dir: Path, reset_settings
+    ):
+        # GLE-14: schema must list "Sleep" (capital S) to match actual key
+        reset_settings.compact = True
+        path = _run_full_export(mock_garmin_api, tmp_export_dir, days=2)
+        content = path.read_text(encoding="utf-8")
+        assert "Sleep (capital S)" in content
+        assert "Key map:" in content
+        assert "sleepScores" in content
+
 
 # ---------------------------------------------------------------------------
 # Snapshot test: identical inputs produce identical content
@@ -305,4 +316,96 @@ class TestSleepSummarySection:
         path = _run_full_export(mock_garmin_api, tmp_export_dir, days=2)
         content = path.read_text(encoding="utf-8")
         assert "Sleep Summaries" not in content
+
+
+# ---------------------------------------------------------------------------
+# GLE-15: Output index file
+# ---------------------------------------------------------------------------
+class TestIndexFile:
+    """GLE-15 writes a sibling .index.json alongside the export."""
+
+    def test_index_written_alongside_export(
+        self, mock_garmin_api, tmp_export_dir: Path, reset_settings
+    ):
+        # Run a full export and check that an index file is written
+        path = _run_full_export(mock_garmin_api, tmp_export_dir, days=2)
+        index_candidates = sorted(
+            tmp_export_dir.glob(path.name.replace(".txt", ".index.json"))
+        )
+        assert index_candidates, "No .index.json file was produced"
+        index_path = index_candidates[0]
+        # Must be valid JSON
+        index_data = json.loads(index_path.read_text(encoding="utf-8"))
+        # Must have required top-level keys
+        assert "file" in index_data
+        assert "version" in index_data
+        assert "exported_at" in index_data
+        assert "date_range" in index_data
+        assert "sections" in index_data
+        # date_range must have start, end, days
+        dr = index_data["date_range"]
+        assert "start" in dr and "end" in dr and "days" in dr
+        # sections must be a list
+        assert isinstance(index_data["sections"], list)
+        # Each section entry must have name, line_start, line_end, byte_start, byte_end
+        for sec in index_data["sections"]:
+            assert "name" in sec
+            assert "line_start" in sec
+            assert "line_end" in sec
+            assert "byte_start" in sec
+            assert "byte_end" in sec
+
+    def test_index_line_ranges_match_actual_file(
+        self, mock_garmin_api, tmp_export_dir: Path, reset_settings
+    ):
+        # The line ranges in the index must match the actual file content
+        path = _run_full_export(mock_garmin_api, tmp_export_dir, days=2)
+        content = path.read_text(encoding="utf-8")
+        lines = content.split("\n")
+
+        index_path = list(
+            tmp_export_dir.glob(path.name.replace(".txt", ".index.json"))
+        )[0]
+        index_data = json.loads(index_path.read_text(encoding="utf-8"))
+
+        for sec in index_data["sections"]:
+            name = sec["name"]
+            ls = sec["line_start"]
+            le = sec["line_end"]
+            bs = sec["byte_start"]
+            be = sec["byte_end"]
+
+            # Line ranges are 1-indexed; verify they land on the right content
+            assert 1 <= ls <= len(lines), f"{name}: line_start {ls} out of range"
+            assert 1 <= le <= len(lines), f"{name}: line_end {le} out of range"
+            assert ls <= le, f"{name}: line_start > line_end"
+
+            # Verify the lines at those positions contain the section header
+            # and (for non-last sections) the next section header
+            assert lines[ls - 1].strip() == name, (
+                f"{name}: line {ls} doesn't match section header {name!r}: "
+                f"{lines[ls - 1]!r}"
+            )
+
+            # Byte ranges: encode the relevant portion and check offsets
+            section_text = "\n".join(lines[ls - 1 : le])
+            encoded = section_text.encode("utf-8")
+            assert encoded == content.encode("utf-8")[bs : be + 1], (
+                f"{name}: byte range [{bs}:{be}] doesn't match line range"
+            )
+
+    def test_skip_index_flag_prevents_index_write(
+        self, mock_garmin_api, tmp_export_dir: Path, reset_settings
+    ):
+        # When skip_index=True, no index file should be written
+        exporter = GarminExporter(
+            mock_garmin_api, tmp_export_dir, days=1, max_activities=10,
+            skip_index=True,
+        )
+        exporter.run()
+        path = sorted(tmp_export_dir.glob("garmin_export_*.txt"), reverse=True)[0]
+        index_candidates = sorted(
+            tmp_export_dir.glob(path.name.replace(".txt", ".index.json"))
+        )
+        assert not index_candidates, "Index file should not be written when skip_index=True"
 

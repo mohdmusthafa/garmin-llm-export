@@ -75,8 +75,8 @@ GLE-5  CLI help revamp     GLE-10 Python API helper
 
 ## 5. Task Tracker — Implementation Status
 
-**Last updated:** 2026-06-07
-**Overall progress:** 12 / 16 tasks complete (75 %)
+**Last updated:** 2026-06-07 (all tasks verified complete)
+**Overall progress:** 16 / 16 tasks complete (100 %)
 
 This section is the single source of truth for what has been built. Update it whenever a task moves state.
 
@@ -96,8 +96,8 @@ This section is the single source of truth for what has been built. Update it wh
 |---|---|---|---|---|---|---|
 | Phase 1 — Foundation | 5 | 5 | 0 | 0 | 0 | **100 %** |
 | Phase 2 — Sleep First-Class | 7 | 7 | 0 | 0 | 0 | **100 %** |
-| Phase 3 — Polish | 4 | 0 | 0 | 0 | 4 | 0 % |
-| **Total** | **16** | **12** | **0** | **0** | **4** | **75 %** |
+| Phase 3 — Polish | 4 | 4 | 0 | 0 | 0 | **100 %** |
+| **Total** | **16** | **16** | **0** | **0** | **0** | **100 %** |
 
 ### 5.3 Progress by epic
 
@@ -105,7 +105,7 @@ This section is the single source of truth for what has been built. Update it wh
 |---|---|---|---|
 | A — Foundations | 5 | 5 | **100 %** |
 | B — Sleep First-Class | 7 | 7 | **100 %** |
-| C — Polish | 4 | 0 | 0 % |
+| C — Polish | 4 | 4 | **100 %** |
 
 ### 5.4 Full task status
 
@@ -123,19 +123,14 @@ This section is the single source of truth for what has been built. Update it wh
 | GLE-10 | Python API helper                 | 2 | B | P1 | XS | ✅ Done   | GLE-6                       | `get_latest_sleep_summary(api, *, tz=None)` in `__init__.py`. |
 | GLE-11 | LLM-readable line sizing          | 2 | B | P0 | S  | ✅ Done   | GLE-1                       | `line_budget=2000`, `wrap_json`, TOC line ranges. |
 | GLE-12 | Restructure Sleep section         | 2 | B | P1 | S  | ✅ Done   | GLE-6                       | Full-mode "Sleep Summaries" prose block; `--no-sleep-summary` to skip. |
-| GLE-13 | Local timestamp formatting        | 3 | C | P1 | S  | 📋 To Do | GLE-11                      | |
-| GLE-14 | Schema/key consistency            | 3 | C | P2 | XS | 📋 To Do | GLE-9                       | |
-| GLE-15 | Output index file                 | 3 | C | P2 | S  | 📋 To Do | GLE-11, GLE-14              | |
-| GLE-16 | README & SKILL.md update          | 3 | C | P1 | S  | 📋 To Do | GLE-4, GLE-7, GLE-8, GLE-10 | |
+| GLE-13 | Local timestamp formatting        | 3 | C | P1 | S  | ✅ Done   | GLE-11                      | `add_local_timestamps` in formatters.py; `TIMESTAMP_FIELDS_GMT` constant. |
+| GLE-14 | Schema/key consistency            | 3 | C | P2 | XS | ✅ Done   | GLE-9                       | `_extract_key_map` in exporter.py; key map embedded in output. |
+| GLE-15 | Output index file                 | 3 | C | P2 | S  | ✅ Done   | GLE-11, GLE-14              | `_write_index_file` in exporter.py; `skip_index` param. |
+| GLE-16 | README& SKILL.md update          | 3 | C | P1 | S  | ✅ Done   | GLE-4, GLE-7, GLE-8, GLE-10 | README, SKILL.md, and CHANGELOG all updated for 0.2.0-alpha. |
 
 ### 5.5 Ready-to-pick queue
 
-Tasks whose dependencies are all satisfied (or have none) and that are still `📋 To Do`. With Phase 2 done, the unblocked Phase 3 tasks are:
-
-- **GLE-13** — Local timestamp formatting          — *unblocked now; GLE-11 done.*
-- **GLE-14** — Schema/key consistency              — *unblocked now; GLE-9 done.*
-- **GLE-15** — Output index file                   — *unblocked now; GLE-11 + GLE-14 done once GLE-14 lands.*
-- **GLE-16** — README & SKILL.md update            — *unblocked now; GLE-4/7/8/10 all done.*
+**All 16 tasks complete.** No tasks remaining.
 
 ### 5.6 Critical path
 

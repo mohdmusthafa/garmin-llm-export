@@ -204,6 +204,7 @@ def _run_for_nights(
         cache=cache,
         update_mode=False,
         sections={"daily_health"},
+        skip_index=True,  # garmin-sleep writes its own small output; skip index
     )
     exporter.run()
 

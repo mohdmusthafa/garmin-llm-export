@@ -3,9 +3,67 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from .config import settings
+
+
+# ---------------------------------------------------------------------------
+# GLE-13: local timestamp formatting
+# ---------------------------------------------------------------------------
+# Fields whose names end in GMT / TimestampGMT contain epoch-ms values that
+# need a human-readable local counterpart.  The _local sibling is added next
+# to each recognised field as an ISO 8601 string with offset.
+TIMESTAMP_FIELDS_GMT = frozenset([
+    "sleepStartTimestampGMT",
+    "sleepEndTimestampGMT",
+    "startGMT",
+    "endGMT",
+    "startTimestampGMT",
+    "endTimestampGMT",
+    "activityStartTimestampGMT",
+    "activityEndTimestampGMT",
+])
+
+
+def add_local_timestamps(payload: Any, tz: str | None) -> Any:
+    """Add ``_local`` ISO-8601 siblings to recognised GMT millisecond timestamp fields.
+
+    The payload is returned unchanged (deep-copied for dicts/lists so the
+    original is never mutated).  Fields that are not in ``TIMESTAMP_FIELDS_GMT``
+    or whose values are not numeric epoch-ms are left as-is.
+
+    ``tz`` is any IANA timezone string such as ``"Asia/Kolkata"`` or ``"UTC"``.
+    If ``tz`` is ``None`` the function is a no-op and returns the payload unchanged.
+    """
+    if tz is None:
+        return payload
+
+    if isinstance(payload, dict):
+        result = dict(payload)
+        # Collect _local additions before mutating the dict (avoids
+        # "dictionary changed size during iteration" when iterating result).
+        additions = {}
+        for key in result:
+            if key in TIMESTAMP_FIELDS_GMT and isinstance(result[key], (int, float)):
+                ms = int(result[key])
+                # Guard against obviously invalid values (negative or pre-2000)
+                if ms > 0 and ms > 946684800_000:
+                    dt = datetime.fromtimestamp(ms / 1000, tz=timezone.utc).astimezone(ZoneInfo(tz))
+                    additions[key + "_local"] = dt.isoformat()
+        result.update(additions)
+        # Recurse into nested values (original keys only, not _local siblings)
+        for key in result:
+            if not key.endswith("_local"):
+                result[key] = add_local_timestamps(result[key], tz)
+        return result
+
+    if isinstance(payload, list):
+        return [add_local_timestamps(item, tz) for item in payload]
+
+    return payload
 
 
 def word_count(text: str) -> int:

@@ -9,6 +9,11 @@ The downstream consumers (GLE-7 ``--last-sleep``, GLE-9 derived fields in
 Daily Health, GLE-10 ``get_latest_sleep_summary``, GLE-12 Sleep Summaries
 section) all use the same builder. Adding a new derived field is a
 one-place change: extend :func:`build_sleep_summary`.
+
+Key map (nested structure in the sleep payload)::
+    Sleep.dailySleepDTO.sleepScores.{totalDuration,stress,awakeCount,remPercentage,restlessness,lightPercentage,deepPercentage,overall}
+    Sleep.dailySleepDTO.{sleepScoreFeedback,sleepScoreInsight,sleepScorePersonalizedInsight}
+    Sleep.{dailySleepDTO,sleepMovement,remSleepData,sleepLevels,sleepRestlessMoments,hrvData,avgOvernightHrv,hrvStatus,bodyBatteryChange,restingHeartRate}
 """
 
 from __future__ import annotations

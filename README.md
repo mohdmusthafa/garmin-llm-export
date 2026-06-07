@@ -17,6 +17,7 @@ LLM tools index plain `.txt` files reliably. Markdown code fences and `.md` pars
 - **Resumable cache** — interrupted `--all` exports pick up where they left off
 - **Incremental updates** — `--update` fetches only new data since your last export
 - **Adaptive rate limiting** — paces API calls and backs off on 429 responses
+- **Focus presets** — `--focus sleep|recovery|training|body` for targeted exports; `--last-sleep` for plain-prose sleep summary
 
 ## Requirements
 
@@ -52,6 +53,22 @@ Log in once — tokens are cached at `~/.garminconnect/` for about a year:
 uv run garmin-export --login
 ```
 
+## Quick Queries
+
+Targeted exports for specific health questions — no full export needed:
+
+| Command | What it exports |
+|---------|-----------------|
+| `uv run garmin-export --focus sleep --days 7` | Last week's sleep data |
+| `uv run garmin-export --focus recovery --days 7` | Recovery, HRV, readiness |
+| `uv run garmin-export --focus training --days 14` | Training load, VO₂ max, race preds |
+| `uv run garmin-export --focus body --days 30` | Weight, body composition |
+| `uv run garmin-export --last-sleep` | Plain-prose last night's sleep summary |
+
+Available presets: `sleep`, `recovery`, `training`, `body`, `all`. Use `--list-presets` to see all.
+
+`uv run garmin-sleep` is a shorthand for `--last-sleep` (outputs plain-prose to stdout).
+
 ## Usage
 
 ```bash
@@ -84,6 +101,11 @@ uv run garmin-export --update
 | `--no-cache` | Force full re-fetch, ignore cache |
 | `--delay SEC` | Base delay between API calls (default: 0.15) |
 | `-v, --verbose` | Debug logging |
+| `--focus PRESET` | Export only sections matching preset (sleep / recovery / training / body / all) |
+| `--list-presets` | List all available focus presets and exit |
+| `--list-sections` | List all available sections and exit |
+| `--last-sleep` | Write plain-prose last-night sleep summary to stdout and exit |
+| `--no-sleep-summary` | Omit the Sleep Summaries section from full export |
 
 Also runnable as a module:
 
@@ -138,9 +160,14 @@ from garmin_llm_export.config import settings
 load_env()
 api = login(Path("~/.garminconnect"))
 
+# Full export (last 30 days)
 settings.compact = True
 cache = ExportCache(Path("export"), enabled=True)
 GarminExporter(api, Path("export"), days=7, max_activities=50).run()
+
+# Quick: get last night's sleep as plain text
+from garmin_llm_export.summaries import get_latest_sleep_summary
+print(get_latest_sleep_summary(api))
 ```
 
 ## Security

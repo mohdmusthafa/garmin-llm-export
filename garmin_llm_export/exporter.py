@@ -19,6 +19,7 @@ from .cache import ExportCache, chunked_date_call
 from .config import settings
 from .formatters import (
     add_derived_daily_fields,
+    add_local_timestamps,
     compact_daily,
     section,
     section_nodata,
@@ -27,6 +28,7 @@ from .formatters import (
 )
 from .summaries import build_sleep_summary
 from .rate_limit import get_limiter, safe_call
+from . import __version__
 
 log = logging.getLogger(__name__)
 
@@ -153,7 +155,8 @@ class GarminExporter:
                  fetch_all: bool = False, cache: Optional[ExportCache] = None,
                  update_mode: bool = False,
                  sections: Optional[Set[str]] = None,
-                 sleep_summary: bool = True):
+                 sleep_summary: bool = True,
+                 skip_index: bool = False):
         self.api = api
         self.out = out_dir
         self.max_activities = max_activities
@@ -170,6 +173,8 @@ class GarminExporter:
         # "Sleep Summaries" section after Daily Health. Compact mode
         # always inlines the summary via GLE-9 derived fields.
         self.sleep_summary = sleep_summary
+        # GLE-15: when True, no .index.json is written (e.g. garmin-sleep).
+        self.skip_index = skip_index
 
         if update_mode:
             base_end = self._find_latest_export_end_date()
@@ -431,6 +436,10 @@ class GarminExporter:
             print()
             log.info(f"Export complete: {out_path}")
             log.info(f"File size: {size_kb:.0f} KB")
+            written = [out_path]
+
+        # GLE-15: write the sibling index file
+        self._write_index_file(written, full_text, selected, now)
 
         log.info(f"API calls: {get_limiter().call_count}")
         log.info(self.cache.summary())
@@ -694,6 +703,150 @@ class GarminExporter:
         return [(sec_name, sec_text)]
 
     # ===================================================================
+    # Index file (GLE-15)
+    # ===================================================================
+
+    def _compute_section_ranges(
+        self,
+        text: str,
+        selected: tuple[SectionDef, ...],
+    ) -> list[dict[str, Any]]:
+        """Compute line/byte ranges for each section in rendered text.
+
+        Walks the text once to find section headers (display name on its own
+        line) and computes start/end line and byte offsets for each section.
+        """
+        if not selected:
+            return []
+
+        lines = text.split("\n")
+        # Find section header lines (display name on its own line)
+        header_indices: list[tuple[int, str]] = []
+        for idx, line in enumerate(lines):
+            stripped = line.strip()
+            for sec in selected:
+                if stripped == sec.display:
+                    header_indices.append((idx, sec.display))
+                    break
+
+        ranges: list[dict[str, Any]] = []
+        for i, (start_zero, name) in enumerate(header_indices):
+            end_zero = (
+                header_indices[i + 1][0] - 1
+                if i + 1 < len(header_indices)
+                else len(lines) - 1
+            )
+            # Convert to 1-indexed lines
+            line_start = start_zero + 1
+            line_end = end_zero + 1
+            # Compute byte offsets from line offsets
+            line_offsets: list[int] = []
+            pos = 0
+            for ln in lines:
+                line_offsets.append(pos)
+                pos += len(ln) + 1  # +1 for newline
+
+            byte_start = line_offsets[start_zero]
+            byte_end = line_offsets[end_zero] + len(lines[end_zero]) - 1
+
+            # Find schema and key_map in the section text
+            sec_text = "\n".join(lines[start_zero:end_zero + 1])
+            schema = self._extract_schema(sec_text, name)
+            key_map = self._extract_key_map(sec_text)
+
+            ranges.append({
+                "name": name,
+                "line_start": line_start,
+                "line_end": line_end,
+                "byte_start": byte_start,
+                "byte_end": byte_end,
+                "schema": schema,
+                "key_map": key_map,
+            })
+
+        return ranges
+
+    def _extract_schema(self, sec_text: str, sec_name: str) -> str:
+        """Extract the schema description from section text, if present."""
+        # Look for "Schema: ..." line
+        for line in sec_text.split("\n"):
+            if line.startswith("Schema:"):
+                return line.strip()
+        return ""
+
+    def _extract_key_map(self, sec_text: str) -> list[str]:
+        """Extract key_map entries from section text, if present."""
+        key_map: list[str] = []
+        in_key_map = False
+        for line in sec_text.split("\n"):
+            if line.strip() == "Key map:":
+                in_key_map = True
+                continue
+            if in_key_map:
+                stripped = line.strip()
+                if not stripped or stripped.startswith("Schema:"):
+                    break
+                key_map.append(stripped)
+        return key_map
+
+    def _write_index_file(
+        self,
+        written: list[Path],
+        full_text: str,
+        selected: tuple[SectionDef, ...],
+        now: datetime,
+    ):
+        """Write a sibling .index.json file for the export (GLE-15)."""
+        if self.skip_index or not written:
+            return
+
+        # Determine the base filename from the first written file
+        base_path = written[0]
+        # Replace .txt with .index.json (handles _partNofM suffixes too)
+        index_name = base_path.name.replace(".txt", ".index.json")
+        index_path = base_path.parent / index_name
+
+        # Build the index structure
+        sections_ranges = self._compute_section_ranges(full_text, selected)
+
+        # For split mode, files contain different sections; we compute ranges
+        # per-file by reading each file's content
+        if settings.split and len(written) > 1:
+            all_sections = []
+            for p in written:
+                text = p.read_text(encoding="utf-8")
+                # Find which sections are in this file by checking header lines
+                file_sections = self._compute_section_ranges(text, selected)
+                # Annotate with the file relative path
+                for sec in file_sections:
+                    sec["file"] = str(p.name)
+                all_sections.extend(file_sections)
+            file_list = [str(p.name) for p in written]
+        else:
+            all_sections = sections_ranges
+            for sec in all_sections:
+                sec["file"] = str(base_path.name)
+            file_list = str(base_path.name)
+
+        index_data = {
+            "file": file_list,
+            "version": __version__,
+            "exported_at": now.isoformat(),
+            "date_range": {
+                "start": self.start_date.isoformat(),
+                "end": self.today.isoformat(),
+                "days": self.days,
+            },
+            "sections": all_sections,
+        }
+
+        index_path.write_text(
+            json.dumps(index_data, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        log.info(f"Index written: {index_path}")
+
+    # ===================================================================
     # Profile
     # ===================================================================
     def export_profile(self):
@@ -819,17 +972,21 @@ class GarminExporter:
 
             # Write to markdown
             if settings.compact:
-                # GLE-9: in compact mode, add derived fields to the day
-                # payload (sleep summary, HRV baselines, body-battery
-                # morning delta). The function is additive and prefixed
-                # with `_` so it never overwrites raw API data.
+                # GLE-9 / GLE-13: in compact mode, add local timestamp siblings
+                # and derived fields. Both functions are additive and prefixed
+                # with `_` so they never overwrite raw API data.
                 user_tz = self._user_timezone()
+                if settings.local_time:
+                    add_local_timestamps(day_data, user_tz)
                 add_derived_daily_fields(day_data, tz=user_tz)
                 write_data = compact_daily(day_data)
                 merged = {display_names.get(k, k): v for k, v in write_data.items() if v is not None}
                 if merged:
                     all_days[ds] = merged
             else:
+                user_tz = self._user_timezone()
+                if settings.local_time:
+                    add_local_timestamps(day_data, user_tz)
                 self.md.append(f"{ds}\n")
                 for key in endpoint_keys:
                     section(self.md, display_names[key], day_data.get(key), 4)
@@ -861,7 +1018,11 @@ class GarminExporter:
 
         if settings.compact:
             if all_days:
-                self.md.append('Schema: "Object keyed by ISO date (YYYY-MM-DD). Each day contains up to 13 endpoints: Daily Summary, Heart Rate, Resting Heart Rate, Sleep, Stress, Blood Oxygen (SpO2), Respiration, Heart Rate Variability, Body Battery, Body Battery Events, Intensity Minutes, All Day Events, Lifestyle Logging. High-frequency time-series downsampled to ~24 hourly data points."\n')
+                self.md.append('Schema: "Object keyed by ISO date (YYYY-MM-DD). Each day contains up to 13 endpoints: Daily Summary, Heart Rate, Resting Heart Rate, Sleep (capital S), Stress, Blood Oxygen (SpO2), Respiration, Heart Rate Variability, Body Battery, Body Battery Events, Intensity Minutes, All Day Events, Lifestyle Logging. High-frequency time-series downsampled to ~24 hourly data points."\n')
+                self.md.append("Key map:\n")
+                self.md.append("  Sleep.dailySleepDTO.sleepScores.{totalDuration,stress,awakeCount,remPercentage,restlessness,lightPercentage,deepPercentage,overall}\n")
+                self.md.append("  Sleep.dailySleepDTO.{sleepScoreFeedback,sleepScoreInsight,sleepScorePersonalizedInsight}\n")
+                self.md.append("  Sleep.{dailySleepDTO,sleepMovement,remSleepData,sleepLevels,sleepRestlessMoments,hrvData,avgOvernightHrv,hrvStatus,bodyBatteryChange,restingHeartRate}\n")
                 self.md.append(f"{to_json(all_days)}\n")
             else:
                 section_nodata(self.md, "Daily Health")

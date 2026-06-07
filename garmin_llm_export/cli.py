@@ -131,6 +131,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-sleep-summary", dest="sleep_summary", action="store_false",
         help="Skip the 'Sleep Summaries' section in full-mode exports (GLE-12).",
     )
+    out_group.add_argument(
+        "--no-local-time", dest="local_time", action="store_false",
+        help="Do not add _local ISO-8601 siblings to GMT timestamp fields (GLE-13).",
+    )
 
     # --- Caching and pacing ---------------------------------------------
     cache_group = parser.add_argument_group("Caching and pacing")
@@ -243,6 +247,7 @@ def main(argv: list[str] | None = None) -> int:
     settings.compact = compact
     settings.split = args.split
     settings.update = args.update
+    settings.local_time = args.local_time
 
     print("\n  Garmin Connect Data Export")
     print(f"  {'-' * 26}\n")

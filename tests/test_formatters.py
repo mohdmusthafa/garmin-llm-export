@@ -14,6 +14,7 @@ from garmin_llm_export import formatters
 from garmin_llm_export.formatters import (
     _longest_line,
     add_derived_daily_fields,
+    add_local_timestamps,
     compact_daily,
     downsample_timeseries,
     section,
@@ -22,6 +23,7 @@ from garmin_llm_export.formatters import (
     to_json,
     word_count,
     wrap_json,
+    TIMESTAMP_FIELDS_GMT,
 )
 
 
@@ -413,3 +415,78 @@ class TestAddDerivedDailyFields:
         add_derived_daily_fields(day, tz="Asia/Kolkata")
         # Second call should not overwrite the existing _summary
         assert day["sleep"]["_summary"] is first_summary
+
+
+# ---------------------------------------------------------------------------
+# GLE-13: local timestamp formatting
+# ---------------------------------------------------------------------------
+class TestAddLocalTimestamps:
+    def test_local_time_added_for_sleep_window(self):
+        # The canonical use-case: a user in Asia/Kolkata sees a human-readable
+        # local timestamp next to the raw millisecond GMT value.
+        payload = {
+            "sleepStartTimestampGMT": 1780552920000,
+            "sleepEndTimestampGMT": 1780605360000,
+        }
+        result = add_local_timestamps(payload, "Asia/Kolkata")
+        # Original fields preserved
+        assert result["sleepStartTimestampGMT"] == 1780552920000
+        assert result["sleepEndTimestampGMT"] == 1780605360000
+        # _local siblings added
+        assert "sleepStartTimestampGMT_local" in result
+        assert "sleepEndTimestampGMT_local" in result
+        # ISO 8601 with +05:30 offset
+        assert "+05:30" in result["sleepStartTimestampGMT_local"]
+        assert result["sleepStartTimestampGMT_local"].startswith("2026-06-04")
+
+    def test_local_time_uses_profile_timezone(self):
+        # Same millisecond value expressed in UTC gives a different local time.
+        payload = {"startGMT": 1780552920000}
+        kolkata = add_local_timestamps(dict(payload), "Asia/Kolkata")
+        utc = add_local_timestamps(dict(payload), "UTC")
+        # Both are valid ISO 8601 but point to the same instant
+        assert "+05:30" in kolkata["startGMT_local"]
+        assert "+00:00" in utc["startGMT_local"]
+        # The offset difference reflects the timezones
+        assert kolkata["startGMT_local"] != utc["startGMT_local"]
+
+    def test_local_time_disabled_by_flag(self):
+        # When tz=None the function is a no-op and returns the input unchanged.
+        payload = {"sleepStartTimestampGMT": 1780552920000}
+        result = add_local_timestamps(payload, None)
+        assert result == payload
+        assert "sleepStartTimestampGMT_local" not in result
+
+    def test_unknown_field_not_modified(self):
+        payload = {"totalSteps": 5000, "startGMT": 1780552920000}
+        result = add_local_timestamps(payload, "UTC")
+        assert result["totalSteps"] == 5000
+        assert "totalSteps_local" not in result
+        assert "startGMT_local" in result
+
+    def test_non_numeric_value_skipped(self):
+        payload = {"sleepStartTimestampGMT": "not-a-number"}
+        result = add_local_timestamps(payload, "UTC")
+        assert "sleepStartTimestampGMT_local" not in result
+
+    def test_negative_epoch_skipped(self):
+        # Values that are clearly not epoch-ms should be skipped
+        payload = {"startGMT": -1}
+        result = add_local_timestamps(payload, "UTC")
+        assert "startGMT_local" not in result
+
+    def test_list_payload_localised_element_wise(self):
+        payload = [
+            {"startTimestampGMT": 1780552920000},
+            {"startTimestampGMT": 1780605360000},
+        ]
+        result = add_local_timestamps(payload, "UTC")
+        assert len(result) == 2
+        assert "startTimestampGMT_local" in result[0]
+        assert "startTimestampGMT_local" in result[1]
+
+    def test_original_payload_unchanged(self):
+        # Ensure the function does not mutate the caller's dict.
+        original = {"sleepEndTimestampGMT": 1780605360000}
+        add_local_timestamps(original, "UTC")
+        assert "sleepEndTimestampGMT_local" not in original
