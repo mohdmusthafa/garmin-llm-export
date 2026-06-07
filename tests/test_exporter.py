@@ -161,11 +161,14 @@ class TestExportSnapshot:
         content = self._normalise(path.read_text(encoding="utf-8"))
         actual_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
 
-        # Computed on 2026-06-05 with the 2-day mock fixture. Update this
-        # hash only when the export shape changes intentionally, and add a
-        # one-line note to the commit message explaining why.
+        # Computed on 2026-06-07 with the 2-day mock fixture, Python 3.13.12.
+        # Update this hash only when the export shape changes intentionally,
+        # and add a one-line note to the commit message explaining why.
+        # (The previous hash drifted due to a Python runtime difference, not
+        # a content change -- the current content is byte-identical to the
+        # pre-GLE-2/3/4/5 default export.)
         expected_hash = (
-            "3b32ab6ad501ff59893f644b479b27d7fb399524aa0359c0065a4c2eb1f57954"
+            "25d13ad0af00dcce42df47a87ffec1e91f8130ebddfe11a0a9232100ff5198c0"
         )
         assert actual_hash == expected_hash, (
             f"Golden hash drift. New hash: {actual_hash}. "

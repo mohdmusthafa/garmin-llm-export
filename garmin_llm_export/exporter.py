@@ -11,7 +11,7 @@ import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, NamedTuple, Optional, Set
 
 from garminconnect import Garmin
 
@@ -28,10 +28,129 @@ from .rate_limit import get_limiter, safe_call
 
 log = logging.getLogger(__name__)
 
+
+class SectionDef(NamedTuple):
+    """Metadata for a single export section.
+
+    - id: short identifier used on the CLI (e.g. "daily_health").
+    - display: human-readable name used in the file (e.g. "Daily Health").
+    - description: one-liner used in the table of contents.
+    - method_name: name of the method on GarminExporter that emits this section.
+    - cache_key: key under which this section is cached as a whole, or None
+      for per-day / per-activity sections that use a different cache scheme.
+    """
+
+    id: str
+    display: str
+    description: str
+    method_name: str
+    cache_key: Optional[str]
+
+
+# Canonical section registry. The order here defines the order sections
+# appear in the file. Each section is identified by a short id used on the
+# CLI; cache_key=None means the section is per-day or per-activity and uses
+# ExportCache.get_day / get_activity rather than get_section.
+SECTION_REGISTRY: tuple[SectionDef, ...] = (
+    SectionDef(
+        "profile", "Profile",
+        "User info, settings, device details, alarms, supported activity types",
+        "export_profile", "profile",
+    ),
+    SectionDef(
+        "daily_health", "Daily Health",
+        "Per-day: steps, heart rate, sleep, stress, body battery, SpO2, HRV, "
+        "respiration, intensity minutes, all-day events",
+        "export_daily_health", None,
+    ),
+    SectionDef(
+        "activities", "Activities",
+        "Per-activity: summary, splits, HR/power zones, exercise sets, "
+        "weather, time-series data",
+        "export_activities", None,
+    ),
+    SectionDef(
+        "body_composition", "Body Composition",
+        "Weight, BMI, body fat, muscle/bone mass, body water, weigh-ins "
+        "(yearly chunks)",
+        "export_body_composition", "body_comp",
+    ),
+    SectionDef(
+        "training", "Training Metrics",
+        "VO2 max, fitness age, training readiness/status, lactate threshold, "
+        "cycling FTP, hill/endurance scores, race predictions",
+        "export_training", "training",
+    ),
+    SectionDef(
+        "goals", "Goals and Records",
+        "Personal records, earned badges, active and past goals",
+        "export_goals", "goals",
+    ),
+    SectionDef(
+        "trends", "Trends",
+        "Weekly aggregates (steps, stress, intensity minutes), daily steps, "
+        "floors, progress summaries",
+        "export_trends", "trends",
+    ),
+    SectionDef(
+        "golf", "Golf",
+        "Round summaries, scorecards, shot data",
+        "export_golf", "golf",
+    ),
+    SectionDef(
+        "gear", "Gear",
+        "Equipment list, per-item stats, activity type defaults",
+        "export_gear", "gear",
+    ),
+    SectionDef(
+        "training_plans", "Training Plans",
+        "Active and past training plans with full details",
+        "export_training_plans", "training_plans",
+    ),
+    SectionDef(
+        "workouts", "Workouts",
+        "Saved workout definitions with full structure",
+        "export_workouts", "workouts",
+    ),
+    SectionDef(
+        "hydration", "Hydration",
+        "Per-day fluid intake",
+        "export_hydration", None,
+    ),
+    SectionDef(
+        "nutrition", "Nutrition",
+        "Per-day food logs, meals, nutrition settings",
+        "export_nutrition", None,
+    ),
+    SectionDef(
+        "womens_health", "Women's Health",
+        "Menstrual calendar, pregnancy summary",
+        "export_womens_health", "womens_health",
+    ),
+)
+
+
+def _format_age(age: Optional[timedelta]) -> str:
+    """Render a cache age as a short human-readable string (e.g. "3d", "12h")."""
+    if age is None:
+        return "?"
+    total = int(age.total_seconds())
+    if total < 0:
+        return "0s"
+    if total < 60:
+        return f"{total}s"
+    if total < 3600:
+        return f"{total // 60}m"
+    if total < 86400:
+        return f"{total // 3600}h"
+    return f"{total // 86400}d"
+
+
 class GarminExporter:
     def __init__(self, api: Garmin, out_dir: Path, days: int, max_activities: int,
                  fetch_all: bool = False, cache: Optional[ExportCache] = None,
-                 update_mode: bool = False):
+                 update_mode: bool = False,
+                 sections: Optional[Set[str]] = None):
         self.api = api
         self.out = out_dir
         self.max_activities = max_activities
@@ -42,6 +161,8 @@ class GarminExporter:
         self.errors: list[str] = []
         self.md: list[str] = []
         self.update_base_date: Optional[str] = None  # end date of base export
+        # None means "all sections"; a set means "only these section ids".
+        self.sections_filter: Optional[Set[str]] = sections
 
         if update_mode:
             base_end = self._find_latest_export_end_date()
@@ -140,6 +261,38 @@ class GarminExporter:
         log.info(f"Could not detect oldest data, defaulting to {fallback}")
         return fallback
 
+    def _selected_sections(self) -> tuple[SectionDef, ...]:
+        """Apply the section filter (if any) and return the chosen SECTION_REGISTRY entries."""
+        if self.sections_filter is None:
+            return SECTION_REGISTRY
+        return tuple(s for s in SECTION_REGISTRY if s.id in self.sections_filter)
+
+    def _get_fresh_cached_section(
+        self, cache_key: Optional[str], display_name: str
+    ) -> Optional[dict]:
+        """Return cached section data if the cache is fresh, else None.
+
+        Logs a single line at INFO when the cache is used, e.g.:
+            "Profile: using cache (3d old)"
+
+        Returns None when:
+        - the section is per-day/per-activity (cache_key is None),
+        - the cache is disabled,
+        - the export is in update mode (always re-fetch),
+        - the section file is missing, or
+        - the section file is older than its max age.
+        """
+        if cache_key is None or not self.cache.enabled or self.update_mode:
+            return None
+        if not self.cache.is_section_fresh(cache_key):
+            return None
+        data = self.cache.get_section(cache_key)
+        if data is None:
+            return None
+        age_str = _format_age(self.cache.section_age(cache_key))
+        log.info(f"  {display_name}: using cache ({age_str} old)")
+        return data
+
     def run(self):
         now = datetime.now()
         suffix = ""
@@ -159,6 +312,8 @@ class GarminExporter:
             log.info(f"Max activities: unlimited")
         else:
             log.info(f"Max activities: {self.max_activities}")
+        if self.sections_filter is not None:
+            log.info(f"Sections: {', '.join(sorted(self.sections_filter))}")
         print()
 
         if self.update_mode:
@@ -172,83 +327,22 @@ class GarminExporter:
             self.md.append(f"Exported: {now.isoformat()}")
             self.md.append(f"Date range: {self.start_date} to {self.today} ({self.days} days)")
             self.md.append(f"Max activities: {self.max_activities}")
+        if self.sections_filter is not None:
+            self.md.append(
+                f"Sections: {', '.join(sorted(self.sections_filter))}"
+            )
         if settings.compact:
             self.md.append(f"Format: compact (nulls stripped, single-line JSON, "
                            f"activity time-series omitted, daily data downsampled to hourly)\n")
         else:
             self.md.append(f"Format: full (complete JSON, all fields)\n")
 
-        if self.update_mode:
-            # Update mode: all sections, bypassing section cache so new data is always fetched
-            sections = [
-                ("Profile", self.export_profile),
-                ("Daily Health", self.export_daily_health),
-                ("Activities", self.export_activities),
-                ("Body Composition", self.export_body_composition),
-                ("Training Metrics", self.export_training),
-                ("Goals and Records", self.export_goals),
-                ("Trends", self.export_trends),
-                ("Golf", self.export_golf),
-                ("Gear", self.export_gear),
-                ("Training Plans", self.export_training_plans),
-                ("Workouts", self.export_workouts),
-                ("Hydration", self.export_hydration),
-                ("Nutrition", self.export_nutrition),
-                ("Women's Health", self.export_womens_health),
-            ]
-        else:
-            sections = [
-                ("Profile", self.export_profile),
-                ("Daily Health", self.export_daily_health),
-                ("Activities", self.export_activities),
-                ("Body Composition", self.export_body_composition),
-                ("Training Metrics", self.export_training),
-                ("Goals and Records", self.export_goals),
-                ("Trends", self.export_trends),
-                ("Golf", self.export_golf),
-                ("Gear", self.export_gear),
-                ("Training Plans", self.export_training_plans),
-                ("Workouts", self.export_workouts),
-                ("Hydration", self.export_hydration),
-                ("Nutrition", self.export_nutrition),
-                ("Women's Health", self.export_womens_health),
-            ]
+        # Resolve which sections to actually run (and which to list in the TOC)
+        selected = self._selected_sections()
+        if not selected:
+            log.warning("Section filter matched no sections -- writing empty export")
 
         # Table of contents for AI parsing
-        if self.update_mode:
-            toc_info = [
-                ("Profile", "User info, settings, device details, alarms, supported activity types"),
-                ("Daily Health", "Per-day: steps, heart rate, sleep, stress, body battery, SpO2, HRV, respiration, intensity minutes, all-day events"),
-                ("Activities", "Per-activity: summary, splits, HR/power zones, exercise sets, weather, time-series data"),
-                ("Body Composition", "Weight, BMI, body fat, muscle/bone mass, body water, weigh-ins (yearly chunks)"),
-                ("Training Metrics", "VO2 max, fitness age, training readiness/status, lactate threshold, cycling FTP, hill/endurance scores, race predictions"),
-                ("Goals and Records", "Personal records, earned badges, active and past goals"),
-                ("Trends", "Weekly aggregates (steps, stress, intensity minutes), daily steps, floors, progress summaries"),
-                ("Golf", "Round summaries, scorecards, shot data"),
-                ("Gear", "Equipment list, per-item stats, activity type defaults"),
-                ("Training Plans", "Active and past training plans with full details"),
-                ("Workouts", "Saved workout definitions with full structure"),
-                ("Hydration", "Per-day fluid intake"),
-                ("Nutrition", "Per-day food logs, meals, nutrition settings"),
-                ("Women's Health", "Menstrual calendar, pregnancy summary"),
-            ]
-        else:
-            toc_info = [
-            ("Profile", "User info, settings, device details, alarms, supported activity types"),
-            ("Daily Health", "Per-day: steps, heart rate, sleep, stress, body battery, SpO2, HRV, respiration, intensity minutes, all-day events"),
-            ("Activities", "Per-activity: summary, splits, HR/power zones, exercise sets, weather, time-series data"),
-            ("Body Composition", "Weight, BMI, body fat, muscle/bone mass, body water, weigh-ins (yearly chunks)"),
-            ("Training Metrics", "VO2 max, fitness age, training readiness/status, lactate threshold, cycling FTP, hill/endurance scores, race predictions"),
-            ("Goals and Records", "Personal records, earned badges, active and past goals"),
-            ("Trends", "Weekly aggregates (steps, stress, intensity minutes), daily steps, floors, progress summaries"),
-            ("Golf", "Round summaries, scorecards, shot data"),
-            ("Gear", "Equipment list, per-item stats, activity type defaults"),
-            ("Training Plans", "Active and past training plans with full details"),
-            ("Workouts", "Saved workout definitions with full structure"),
-            ("Hydration", "Per-day fluid intake"),
-            ("Nutrition", "Per-day food logs, meals, nutrition settings"),
-            ("Women's Health", "Menstrual calendar, pregnancy summary"),
-        ]
         self.md.append("Table of Contents\n")
         if self.update_mode:
             self.md.append(f"This file contains NEW data since {self.update_base_date}.")
@@ -262,11 +356,13 @@ class GarminExporter:
             self.md.append("Each section has subsections with titled JSON blocks.")
             self.md.append("All data is raw JSON from the Garmin Connect API.")
         self.md.append("Sections with no data contain a note: No data available.\n")
-        for i, (name, desc) in enumerate(toc_info, 1):
-            self.md.append(f"  {i}. {name} -- {desc}")
+        for i, sec in enumerate(selected, 1):
+            self.md.append(f"  {i}. {sec.display} -- {sec.description}")
         self.md.append("")
 
-        for name, fn in sections:
+        for sec in selected:
+            name = sec.display
+            fn = getattr(self, sec.method_name)
             log.info(f"Exporting {name}...")
             try:
                 fn()
@@ -485,8 +581,8 @@ class GarminExporter:
     def export_profile(self):
         self.md.append("\nProfile\n")
 
-        cached = self.cache.get_section("profile")
-        if cached is not None and not self.update_mode:
+        cached = self._get_fresh_cached_section("profile", "Profile")
+        if cached is not None:
             data = cached
         else:
             data = {}
@@ -748,8 +844,8 @@ class GarminExporter:
     def export_body_composition(self):
         self.md.append("\nBody Composition\n")
 
-        cached = self.cache.get_section("body_comp")
-        if cached is not None and not self.update_mode:
+        cached = self._get_fresh_cached_section("body_comp", "Body Composition")
+        if cached is not None:
             data = cached
         else:
             data = {}
@@ -772,8 +868,8 @@ class GarminExporter:
     def export_training(self):
         self.md.append("\nTraining Metrics\n")
 
-        cached = self.cache.get_section("training")
-        if cached is not None and not self.update_mode:
+        cached = self._get_fresh_cached_section("training", "Training Metrics")
+        if cached is not None:
             data = cached
         else:
             today_s = self.today.isoformat()
@@ -829,8 +925,8 @@ class GarminExporter:
     def export_goals(self):
         self.md.append("\nGoals and Records\n")
 
-        cached = self.cache.get_section("goals")
-        if cached is not None and not self.update_mode:
+        cached = self._get_fresh_cached_section("goals", "Goals and Records")
+        if cached is not None:
             data = cached
         else:
             data = {}
@@ -855,8 +951,8 @@ class GarminExporter:
     def export_trends(self):
         self.md.append("\nTrends\n")
 
-        cached = self.cache.get_section("trends")
-        if cached is not None and not self.update_mode:
+        cached = self._get_fresh_cached_section("trends", "Trends")
+        if cached is not None:
             data = cached
         else:
             start_s = self.start_date.isoformat()
@@ -902,8 +998,8 @@ class GarminExporter:
     def export_golf(self):
         self.md.append("\nGolf\n")
 
-        cached = self.cache.get_section("golf")
-        if cached is not None and not self.update_mode:
+        cached = self._get_fresh_cached_section("golf", "Golf")
+        if cached is not None:
             data = cached
         else:
             data = {}
@@ -941,8 +1037,8 @@ class GarminExporter:
     def export_gear(self):
         self.md.append("\nGear\n")
 
-        cached = self.cache.get_section("gear")
-        if cached is not None and not self.update_mode:
+        cached = self._get_fresh_cached_section("gear", "Gear")
+        if cached is not None:
             data = cached
         else:
             # Need user profile number for gear endpoints
@@ -989,8 +1085,8 @@ class GarminExporter:
     def export_training_plans(self):
         self.md.append("\nTraining Plans\n")
 
-        cached = self.cache.get_section("training_plans")
-        if cached is not None and not self.update_mode:
+        cached = self._get_fresh_cached_section("training_plans", "Training Plans")
+        if cached is not None:
             data = cached
         else:
             data = {}
@@ -1031,8 +1127,8 @@ class GarminExporter:
     def export_workouts(self):
         self.md.append("\nWorkouts\n")
 
-        cached = self.cache.get_section("workouts")
-        if cached is not None and not self.update_mode:
+        cached = self._get_fresh_cached_section("workouts", "Workouts")
+        if cached is not None:
             data = cached
         else:
             data = {}
@@ -1207,8 +1303,8 @@ class GarminExporter:
     def export_womens_health(self):
         self.md.append("\nWomen's Health\n")
 
-        cached = self.cache.get_section("womens_health")
-        if cached is not None and not self.update_mode:
+        cached = self._get_fresh_cached_section("womens_health", "Women's Health")
+        if cached is not None:
             data = cached
         else:
             data = {}

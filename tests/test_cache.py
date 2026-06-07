@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import json
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
-from garmin_llm_export.cache import ExportCache, chunked_date_call
+from garmin_llm_export.cache import (
+    SECTION_MAX_AGE_DAYS,
+    ExportCache,
+    chunked_date_call,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -39,12 +43,58 @@ class TestExportCache:
         assert result == {"full_name": "Test"}
 
     def test_section_age_returns_timedelta(self, cache: ExportCache):
-        # Implemented in GLE-3; skipped until then.
-        pytest.skip("section_age() is added in GLE-3")
+        cache.put_section("profile", {"v": 1})
+        # Touch the file to a known mtime in the past
+        path = cache.section_path("profile")
+        old = datetime.now(tz=timezone.utc) - timedelta(hours=3)
+        import os
+        os.utime(path, (old.timestamp(), old.timestamp()))
+
+        age = cache.section_age("profile")
+        assert age is not None
+        # Should be roughly 3 hours (allow generous slack for slow CI)
+        assert timedelta(hours=2, minutes=55) <= age <= timedelta(hours=3, minutes=5)
 
     def test_section_age_missing_returns_none(self, cache: ExportCache):
-        # Implemented in GLE-3; skipped until then.
-        pytest.skip("section_age() is added in GLE-3")
+        assert cache.section_age("does_not_exist") is None
+
+    def test_is_section_fresh_true_when_recent(self, cache: ExportCache):
+        cache.put_section("profile", {"v": 1})
+        # profile max age is 7 days by default
+        assert cache.is_section_fresh("profile") is True
+
+    def test_is_section_fresh_false_when_missing(self, cache: ExportCache):
+        assert cache.is_section_fresh("profile") is False
+
+    def test_is_section_fresh_false_when_disabled(self, tmp_export_dir: Path):
+        c = ExportCache(tmp_export_dir, enabled=False)
+        c.put_section("profile", {"v": 1})
+        assert c.is_section_fresh("profile") is False
+
+    def test_is_section_fresh_false_when_past_max_age(self, cache: ExportCache):
+        cache.put_section("profile", {"v": 1})
+        path = cache.section_path("profile")
+        # Pretend the file is 8 days old -- past profile's 7d max age
+        old = datetime.now(tz=timezone.utc) - timedelta(days=8)
+        import os
+        os.utime(path, (old.timestamp(), old.timestamp()))
+        assert cache.is_section_fresh("profile") is False
+
+    def test_is_section_fresh_true_when_max_age_is_none(self, cache: ExportCache):
+        # goals has max_age = None (never expires)
+        cache.put_section("goals", {"v": 1})
+        path = cache.section_path("goals")
+        old = datetime.now(tz=timezone.utc) - timedelta(days=365 * 5)
+        import os
+        os.utime(path, (old.timestamp(), old.timestamp()))
+        assert cache.is_section_fresh("goals") is True
+
+    def test_section_max_age_policy_matches_plan(self):
+        # Spot-check the policy values defined in the plan
+        assert SECTION_MAX_AGE_DAYS["profile"] == 7
+        assert SECTION_MAX_AGE_DAYS["body_comp"] == 1
+        assert SECTION_MAX_AGE_DAYS["training_plans"] == 30
+        assert SECTION_MAX_AGE_DAYS["goals"] is None
 
     def test_overwrite_replaces(self, cache: ExportCache):
         cache.put_section("profile", {"v": 1})

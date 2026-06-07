@@ -4,13 +4,37 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Dict, Optional
 
 from .rate_limit import safe_call
 
 log = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Section-level max-age policy.
+#
+# Some sections change frequently (body composition can change daily) while
+# others are effectively static (your list of supported activity types).
+# Rather than re-fetching on every run, we let the cache live for a few days
+# and only re-fetch when the on-disk file is older than this threshold.
+#
+# - 0 means "always re-fetch" (no caching across runs).
+# - None means "never expires" (effectively eternal).
+# ---------------------------------------------------------------------------
+SECTION_MAX_AGE_DAYS: Dict[str, Optional[int]] = {
+    "profile": 7,
+    "body_comp": 1,
+    "training": 1,
+    "goals": None,           # personal records and goals change rarely
+    "trends": 1,
+    "golf": 30,
+    "gear": 7,
+    "training_plans": 30,
+    "workouts": 30,
+    "womens_health": 7,
+}
 
 def chunked_date_call(fn, start: date, end: date, label: str, chunk_days: int = 365):
     """Call a date-range API in yearly chunks and merge the results.
@@ -145,6 +169,41 @@ class ExportCache:
                 pass
         self.misses += 1
         return None
+
+    def section_path(self, name: str) -> Path:
+        """Return the on-disk path of a section cache file (does not check existence)."""
+        return self.section_dir / f"{name}.json"
+
+    def section_age(self, name: str) -> Optional[timedelta]:
+        """Return how old the cached section is, or None if the file is missing.
+
+        Age is measured from the file's modification time to "now" (in UTC)
+        so tests that use freezegun can control it deterministically.
+        """
+        path = self.section_path(name)
+        if not self.enabled or not path.exists():
+            return None
+        try:
+            mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+        except OSError:
+            return None
+        return datetime.now(tz=timezone.utc) - mtime
+
+    def is_section_fresh(self, name: str) -> bool:
+        """True if the cached section exists and is younger than its max age.
+
+        A max age of None means "never expires" -> always fresh.
+        A missing file is not fresh.
+        """
+        if not self.enabled:
+            return False
+        age = self.section_age(name)
+        if age is None:
+            return False
+        max_days = SECTION_MAX_AGE_DAYS.get(name)
+        if max_days is None:
+            return True
+        return age <= timedelta(days=max_days)
 
     def put_section(self, name: str, data: dict):
         if not self.enabled:

@@ -75,8 +75,8 @@ GLE-5  CLI help revamp     GLE-10 Python API helper
 
 ## 5. Task Tracker — Implementation Status
 
-**Last updated:** 2026-06-05
-**Overall progress:** 1 / 16 tasks complete (6 %)
+**Last updated:** 2026-06-07
+**Overall progress:** 5 / 16 tasks complete (31 %)
 
 This section is the single source of truth for what has been built. Update it whenever a task moves state.
 
@@ -94,16 +94,16 @@ This section is the single source of truth for what has been built. Update it wh
 
 | Phase | Tasks | ✅ Done | 🚧 In Progress | ⏸ Blocked | 📋 To Do | % Complete |
 |---|---|---|---|---|---|---|
-| Phase 1 — Foundation | 5 | 1 | 0 | 0 | 4 | 20 % |
+| Phase 1 — Foundation | 5 | 5 | 0 | 0 | 0 | **100 %** |
 | Phase 2 — Sleep First-Class | 7 | 0 | 0 | 0 | 7 | 0 % |
 | Phase 3 — Polish | 4 | 0 | 0 | 0 | 4 | 0 % |
-| **Total** | **16** | **1** | **0** | **0** | **15** | **6 %** |
+| **Total** | **16** | **5** | **0** | **0** | **11** | **31 %** |
 
 ### 5.3 Progress by epic
 
 | Epic | Tasks | Done | % Complete |
 |---|---|---|---|
-| A — Foundations | 5 | 1 | 20 % |
+| A — Foundations | 5 | 5 | **100 %** |
 | B — Sleep First-Class | 7 | 0 | 0 % |
 | C — Polish | 4 | 0 | 0 % |
 
@@ -112,10 +112,10 @@ This section is the single source of truth for what has been built. Update it wh
 | ID | Title | Phase | Epic | Priority | Effort | Status | Dependencies | Branch / Notes |
 |---|---|---|---|---|---|---|---|---|
 | GLE-1  | Test scaffolding & fixtures       | 1 | A | P0 | S  | ✅ Done   | —                          | Tests, fixtures, mock API, golden snapshot. #gle-1 |
-| GLE-2  | Section selection (`--sections`)  | 1 | A | P0 | M  | 📋 To Do | GLE-1                       | |
-| GLE-3  | Reuse cached static sections      | 1 | A | P1 | S  | 📋 To Do | GLE-1                       | |
-| GLE-4  | Focus presets (`--focus`)         | 1 | A | P0 | S  | 📋 To Do | GLE-2                       | |
-| GLE-5  | CLI help & discovery revamp       | 1 | A | P2 | XS | 📋 To Do | GLE-2, GLE-4                | |
+| GLE-2  | Section selection (`--sections`)  | 1 | A | P0 | M  | ✅ Done   | GLE-1                       | `SECTION_REGISTRY` + `sections=` filter; TOC reflects choice. |
+| GLE-3  | Reuse cached static sections      | 1 | A | P1 | S  | ✅ Done   | GLE-1                       | `cache.section_age()` + `is_section_fresh()`; per-section max-age policy. |
+| GLE-4  | Focus presets (`--focus`)         | 1 | A | P0 | S  | ✅ Done   | GLE-2                       | New `presets.py`; sleep/recovery/training/body/all. |
+| GLE-5  | CLI help & discovery revamp       | 1 | A | P2 | XS | ✅ Done   | GLE-2, GLE-4                | Argument groups, `--list-presets`, `--list-sections`, quick-start epilog. |
 | GLE-6  | Sleep summary engine              | 2 | B | P0 | M  | 📋 To Do | GLE-1                       | Pure function, easy to unit-test |
 | GLE-7  | `--last-sleep` flag               | 2 | B | P0 | S  | 📋 To Do | GLE-2, GLE-3, GLE-6         | Headline feature |
 | GLE-8  | `garmin-sleep` subcommand         | 2 | B | P1 | S  | 📋 To Do | GLE-7                       | |
@@ -130,14 +130,12 @@ This section is the single source of truth for what has been built. Update it wh
 
 ### 5.5 Ready-to-pick queue
 
-Tasks whose dependencies are all satisfied (or have none) and that are still `📋 To Do`. All four unblocked when GLE-1 ✅ landed.
+Tasks whose dependencies are all satisfied (or have none) and that are still `📋 To Do`. With Phase 1 done, the unblocked Phase 2 tasks are:
 
-- **GLE-2**  — Section selection (`--sections`)     — *unblocked by GLE-1 ✅.*
-- **GLE-3**  — Reuse cached static sections          — *unblocked by GLE-1 ✅.*
-- **GLE-6**  — Sleep summary engine                  — *unblocked by GLE-1 ✅; pure function, easy to unit-test.*
-- **GLE-11** — LLM-readable line sizing              — *unblocked by GLE-1 ✅.*
+- **GLE-6**  — Sleep summary engine                  — *unblocked now; pure function, easy to unit-test.*
+- **GLE-11** — LLM-readable line sizing              — *unblocked now.*
 
-These four have no inter-dependencies on each other and can be worked in parallel.
+The other Phase 2 tasks (GLE-7, GLE-8, GLE-9, GLE-10, GLE-12) unblock once GLE-6 lands.
 
 ### 5.6 Critical path
 
