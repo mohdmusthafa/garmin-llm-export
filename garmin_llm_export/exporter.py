@@ -977,7 +977,7 @@ class GarminExporter:
                 # with `_` so they never overwrite raw API data.
                 user_tz = self._user_timezone()
                 if settings.local_time:
-                    add_local_timestamps(day_data, user_tz)
+                    day_data = add_local_timestamps(day_data, user_tz)
                 add_derived_daily_fields(day_data, tz=user_tz)
                 write_data = compact_daily(day_data)
                 merged = {display_names.get(k, k): v for k, v in write_data.items() if v is not None}
@@ -986,7 +986,7 @@ class GarminExporter:
             else:
                 user_tz = self._user_timezone()
                 if settings.local_time:
-                    add_local_timestamps(day_data, user_tz)
+                    day_data = add_local_timestamps(day_data, user_tz)
                 self.md.append(f"{ds}\n")
                 for key in endpoint_keys:
                     section(self.md, display_names[key], day_data.get(key), 4)
